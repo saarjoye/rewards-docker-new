@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Microsoft Rewards 微软积分全能自动化控制台</title>
+  <title>Rewards</title>
   <link rel="icon" href="https://bing.com/th?id=OMR.icon-96.png&pid=Rewards" type="image/png">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -54,6 +54,9 @@
           <div class="header-actions">
             <button id="btn-open-logs" class="btn btn-secondary btn-sm" title="查看全部历史日志（实时更新）">
               <span>📜</span> 日志
+            </button>
+            <button id="btn-logout" class="btn btn-secondary btn-sm" title="退出当前管理员登录">
+              <span>🚪</span> 退出
             </button>
             <!-- 主题切换胶囊 -->
             <div class="theme-toggle-wrap" id="theme-toggle-wrap">
@@ -790,9 +793,11 @@
             <small class="form-hint">常用预设：<code>*/25 * * * *</code> (每25分钟检测一次) | <code>0 8,12,18 * * *</code> (每天8点、12点、18点)</small>
           </div>
           <div class="form-group">
-            <label class="form-label">🔒 Web 访问密码（留空则不启用认证）</label>
-            <input type="password" id="cfg-auth-password" class="form-input" autocomplete="new-password" placeholder="建议设置，避免账号 Cookie 被他人读取">
-            <small class="form-hint">设置后访问控制台需要输入此密码（HTTP Basic 认证）。保存并刷新页面后生效。页面会明文返回账号凭据，请勿在公网无密码暴露此端口。</small>
+            <label class="form-label">🔒 管理员登录</label>
+            <div class="form-hint" style="line-height: 1.7;">
+              管理员账号已由「首次访问创建账号密码」流程建立，配置页不再保存明文 Web 密码。<br>
+              如需修改账号或密码，请退出登录后使用登录页重新初始化（或等待后续独立设置页）。
+            </div>
           </div>
         </div>
 
@@ -803,6 +808,51 @@
             <div class="input-with-btn">
               <input type="text" id="cfg-notify-wework" class="form-input" placeholder="例如：xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx">
               <button class="btn btn-secondary btn-sm" onclick="testNotifyChannel('wework')">测试</button>
+            </div>
+          </div>
+
+          <div class="form-group" style="background: var(--card-inner); padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border-color);">
+            <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+              <input type="checkbox" id="cfg-notify-wework-app-enabled" style="width:auto; margin:0;">
+              📱 企业微信应用消息（自建应用推送）
+            </label>
+            <small class="form-hint">需在企业微信管理后台创建自建应用，获取 CorpID、AgentId 与 Secret。启用后按下方配置发送应用消息。</small>
+            <div style="display:grid; gap:10px; margin-top:12px;">
+              <div>
+                <label class="form-label">API Base URL（留空使用官方地址）</label>
+                <input type="text" id="cfg-notify-wework-app-base-url" class="form-input" placeholder="https://qyapi.weixin.qq.com">
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                  <label class="form-label">企业 CorpID</label>
+                  <input type="text" id="cfg-notify-wework-app-corp-id" class="form-input" placeholder="wwxxxxxxxxxxxxxxxx">
+                </div>
+                <div>
+                  <label class="form-label">应用 AgentId</label>
+                  <input type="text" id="cfg-notify-wework-app-agent-id" class="form-input" placeholder="1000002">
+                </div>
+              </div>
+              <div>
+                <label class="form-label">应用 Secret</label>
+                <div class="secret-field">
+                  <input type="password" id="cfg-notify-wework-app-secret" class="form-input" autocomplete="new-password" spellcheck="false" placeholder="应用 Secret">
+                  <button type="button" class="secret-toggle" data-target="cfg-notify-wework-app-secret" title="显示 / 隐藏 Secret">👁</button>
+                </div>
+                <small class="form-hint" id="cfg-notify-wework-app-secret-hint"></small>
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                  <label class="form-label">接收成员（touser）</label>
+                  <input type="text" id="cfg-notify-wework-app-to-user" class="form-input" placeholder="@all">
+                </div>
+                <div>
+                  <label class="form-label">最大重试次数</label>
+                  <input type="number" id="cfg-notify-wework-app-max-retries" class="form-input" min="0" max="10" step="1" placeholder="5">
+                </div>
+              </div>
+              <div style="display:flex; justify-content:flex-end;">
+                <button class="btn btn-secondary btn-sm" onclick="testNotifyChannel('weworkApp')">测试应用推送</button>
+              </div>
             </div>
           </div>
           <div class="form-group">

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { DATA_DIR, writeFileAtomic } from './fsUtil.js';
@@ -63,6 +64,16 @@ const DEFAULT_CONFIG = {
   },
   notify: {
     wework: '',
+    // 企业微信应用消息（与上面的群机器人 Webhook 相互独立，保留旧配置兼容）
+    weworkApp: {
+      enabled: false,
+      baseUrl: '',
+      corpId: '',
+      agentId: '',
+      secret: '',
+      toUser: '@all',
+      maxRetries: 5
+    },
     dingding: '',
     feishu: '',
     pushme: '',
@@ -86,7 +97,16 @@ const DEFAULT_CONFIG = {
   },
   server: {
     port: 5308,
-    authPassword: ''
+    // 旧版 HTTP Basic 密码：保留字段用于兼容已有部署，不再向 WebUI 下发明文
+    authPassword: '',
+    // 首次访问时创建的管理员账号；密码使用 scrypt 加盐哈希保存
+    auth: {
+      username: '',
+      passwordHash: '',
+      salt: '',
+      sessionSecret: '',
+      createdAt: 0
+    }
   }
 };
 
@@ -457,6 +477,52 @@ class ConfigManager {
     return (this.get().epic?.claimRecords || []).slice(0, limit);
   }
 
+  /**
+   * 读取管理员登录信息（含哈希与盐，仅限服务端内部使用）
+   */
+  getAdminAuth() {
+    const auth = this.get().server?.auth || {};
+    return {
+      username: auth.username || '',
+      passwordHash: auth.passwordHash || '',
+      salt: auth.salt || '',
+      sessionSecret: auth.sessionSecret || '',
+      createdAt: Number(auth.createdAt) || 0
+    };
+  }
+
+  /**
+   * 保存管理员登录信息。此方法只应由服务端认证接口调用，
+   * 通用配置接口 /api/config 不允许修改这些字段。
+   */
+  setAdminAuth(data = {}) {
+    const cfg = this.get();
+    if (!cfg.server) cfg.server = {};
+    cfg.server.auth = {
+      username: data.username || '',
+      passwordHash: data.passwordHash || '',
+      salt: data.salt || '',
+      sessionSecret: data.sessionSecret || '',
+      createdAt: Number(data.createdAt) || Date.now()
+    };
+    this.save();
+    return this.getAdminAuth();
+  }
+
+  /**
+   * 确保会话签名密钥存在；不存在时自动生成并落盘。
+   */
+  ensureAdminSessionSecret() {
+    const cfg = this.get();
+    const existing = cfg.server?.auth?.sessionSecret;
+    if (existing) return existing;
+    if (!cfg.server) cfg.server = {};
+    if (!cfg.server.auth) cfg.server.auth = {};
+    cfg.server.auth.sessionSecret = crypto.randomBytes(32).toString('hex');
+    this.save();
+    return cfg.server.auth.sessionSecret;
+  }
+
   update(partial) {
     if (!this.config) {
       this.load();
@@ -464,6 +530,23 @@ class ConfigManager {
 
     // 先深拷贝：mergeDeep 会改写传入对象，直接操作会把 express 的 req.body 也改掉
     const patch = structuredClone(partial || {});
+
+    // 管理员登录字段只能通过认证接口写入，禁止通用配置接口覆盖
+    if (patch.server && typeof patch.server === 'object') {
+      delete patch.server.auth;
+      delete patch.server.authPassword;
+    }
+
+    // 企业微信应用 Secret 属于凭据：前端留空或回传占位符时保留服务端原值
+    if (patch.notify?.weworkApp && typeof patch.notify.weworkApp === 'object') {
+      const existingSecret = this.config.notify?.weworkApp?.secret || '';
+      const incomingSecret = patch.notify.weworkApp.secret;
+      if (incomingSecret === SECRET_CLEAR || incomingSecret === null) {
+        patch.notify.weworkApp.secret = '';
+      } else if (incomingSecret === SECRET_PLACEHOLDER || incomingSecret === '') {
+        patch.notify.weworkApp.secret = existingSecret;
+      }
+    }
 
     // 如果更新的是单账号字段 account，同步更新到第一个账号或指定账号
     if (patch.account && Array.isArray(this.config.accounts) && this.config.accounts.length > 0) {
@@ -544,6 +627,21 @@ class ConfigManager {
       for (const field of SECRET_ACCOUNT_FIELDS) {
         cfg.account[field] = cfg.account[field] ? SECRET_PLACEHOLDER : '';
       }
+    }
+    // 企业微信应用 Secret 不下发明文，同时告诉前端是否已经保存过 Secret
+    if (cfg.notify?.weworkApp && typeof cfg.notify.weworkApp === 'object') {
+      cfg.notify.weworkApp.hasSecret = !!cfg.notify.weworkApp.secret;
+      cfg.notify.weworkApp.secret = cfg.notify.weworkApp.secret ? SECRET_PLACEHOLDER : '';
+    }
+    // 登录账号的密码哈希、盐值和旧版 Basic 密码都属于敏感信息
+    if (cfg.server && typeof cfg.server === 'object') {
+      const auth = cfg.server.auth || {};
+      cfg.server.auth = {
+        username: auth.username || '',
+        createdAt: auth.createdAt || 0,
+        initialized: !!(auth.passwordHash && auth.salt)
+      };
+      cfg.server.authPassword = '';
     }
     // Epic 会话同样属于凭据，不能下发到前端
     if (cfg.epic && Array.isArray(cfg.epic.accounts)) {

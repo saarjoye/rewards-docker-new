@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rewards 登录</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: rgba(24, 33, 54, 0.92);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #f4f7fb;
+      --sub: #9aa7bf;
+      --primary: #2f81f7;
+      --danger: #ef5350;
+      --success: #2ecc71;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 20% 10%, #1d2f5c 0%, #0b1020 55%, #070a14 100%);
+    }
+    .card {
+      width: 100%;
+      max-width: 400px;
+      padding: 32px 28px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .logo { font-size: 30px; }
+    h1 { font-size: 21px; margin: 0; font-weight: 650; }
+    .subtitle { color: var(--sub); font-size: 13px; margin: 8px 0 22px; line-height: 1.6; }
+    label { display: block; font-size: 13px; color: var(--sub); margin: 14px 0 6px; }
+    input {
+      width: 100%;
+      padding: 11px 13px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.25);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.2); }
+    button {
+      width: 100%;
+      margin-top: 22px;
+      padding: 12px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.08); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .message { margin-top: 14px; font-size: 13px; min-height: 18px; line-height: 1.5; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--success); }
+    .hint { margin-top: 16px; font-size: 12px; color: var(--sub); line-height: 1.6; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <span class="logo">🎁</span>
+      <h1 id="page-title">Rewards</h1>
+    </div>
+    <p class="subtitle" id="page-subtitle">正在检查登录状态...</p>
+    <form id="auth-form" class="hidden" autocomplete="off">
+      <div>
+        <label for="username">账号</label>
+        <input id="username" name="username" type="text" autocomplete="username" minlength="3" maxlength="64" required>
+      </div>
+      <div id="password-field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required>
+      </div>
+      <div id="confirm-field" class="hidden">
+        <label for="confirm-password">确认密码</label>
+        <input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128">
+      </div>
+      <button id="submit-btn" type="submit">登录</button>
+    </form>
+    <div id="message" class="message"></div>
+    <p class="hint" id="hint"></p>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.getElementById('auth-form');
+      var titleEl = document.getElementById('page-title');
+      var subtitleEl = document.getElementById('page-subtitle');
+      var messageEl = document.getElementById('message');
+      var hintEl = document.getElementById('hint');
+      var submitBtn = document.getElementById('submit-btn');
+      var confirmField = document.getElementById('confirm-field');
+      var confirmInput = document.getElementById('confirm-password');
+      var passwordInput = document.getElementById('password');
+      var initialized = false;
+
+      function setMessage(text, kind) {
+        messageEl.textContent = text || '';
+        messageEl.className = 'message' + (kind ? ' ' + kind : '');
+      }
+
+      function setBusy(busy) {
+        submitBtn.disabled = busy;
+        submitBtn.textContent = busy ? '请稍候...' : (initialized ? '登录' : '创建账号并登录');
+      }
+
+      function showSetupMode() {
+        initialized = false;
+        titleEl.textContent = 'Rewards';
+        subtitleEl.textContent = '首次使用，请创建管理员账号与密码。';
+        hintEl.textContent = '账号长度 3-64 位，仅支持字母、数字、下划线、点、@ 和短横线；密码至少 8 位。';
+        confirmField.classList.remove('hidden');
+        confirmInput.required = true;
+        passwordInput.setAttribute('autocomplete', 'new-password');
+        submitBtn.textContent = '创建账号并登录';
+        form.classList.remove('hidden');
+      }
+
+      function showLoginMode(username) {
+        initialized = true;
+        titleEl.textContent = 'Rewards';
+        subtitleEl.textContent = username ? ('管理员：' + username + '，请登录。') : '请输入管理员账号与密码。';
+        hintEl.textContent = '会话默认保持 7 天，退出登录后需重新输入密码。';
+        confirmField.classList.add('hidden');
+        confirmInput.required = false;
+        passwordInput.setAttribute('autocomplete', 'current-password');
+        submitBtn.textContent = '登录';
+        form.classList.remove('hidden');
+      }
+
+      async function fetchStatus() {
+        var res = await fetch('/api/auth/status', { credentials: 'same-origin' });
+        var data = await res.json();
+        return data && data.data ? data.data : {};
+      }
+
+      fetchStatus().then(function (status) {
+        if (status.authenticated) {
+          window.location.replace('/');
+          return;
+        }
+        if (status.initialized) showLoginMode(status.username);
+        else showSetupMode();
+      }).catch(function () {
+        subtitleEl.textContent = '无法连接服务，请刷新页面重试。';
+      });
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        setMessage('');
+        var username = document.getElementById('username').value.trim();
+        var password = passwordInput.value;
+        var confirmPassword = confirmInput.value;
+        if (!initialized && password !== confirmPassword) {
+          setMessage('两次输入的密码不一致', 'error');
+          return;
+        }
+        setBusy(true);
+        try {
+          var endpoint = initialized ? '/api/auth/login' : '/api/auth/setup';
+          var body = initialized ? { username: username, password: password } : { username: username, password: password, confirmPassword: confirmPassword };
+          var res = await fetch(endpoint, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          var data = await res.json().catch(function () { return {}; });
+          if (!res.ok || !data.success) throw new Error(data.message || '操作失败');
+          setMessage('成功，正在进入控制台...', 'ok');
+          window.location.replace('/');
+        } catch (e) {
+          setMessage(e.message, 'error');
+          setBusy(false);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

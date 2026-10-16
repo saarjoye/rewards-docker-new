@@ -2318,11 +2318,20 @@ function populateSettingsForm() {
   // 调度
   document.getElementById('cfg-sched-enabled').checked = c.schedule?.enabled !== false;
   document.getElementById('cfg-sched-cron').value = c.schedule?.cron || '*/25 * * * *';
-  // Web 访问密码
-  const authPassElem = document.getElementById('cfg-auth-password');
-  if (authPassElem) authPassElem.value = c.server?.authPassword || '';
   // 通知
   document.getElementById('cfg-notify-wework').value = c.notify?.wework || '';
+  const weworkApp = c.notify?.weworkApp || {};
+  const weworkAppEnabled = document.getElementById('cfg-notify-wework-app-enabled');
+  if (weworkAppEnabled) weworkAppEnabled.checked = !!weworkApp.enabled;
+  document.getElementById('cfg-notify-wework-app-base-url').value = weworkApp.baseUrl || '';
+  document.getElementById('cfg-notify-wework-app-corp-id').value = weworkApp.corpId || '';
+  document.getElementById('cfg-notify-wework-app-agent-id').value = weworkApp.agentId || '';
+  const weworkSecretElem = document.getElementById('cfg-notify-wework-app-secret');
+  if (weworkSecretElem) weworkSecretElem.value = weworkApp.hasSecret ? SECRET_PLACEHOLDER : '';
+  const weworkSecretHint = document.getElementById('cfg-notify-wework-app-secret-hint');
+  if (weworkSecretHint) weworkSecretHint.textContent = weworkApp.hasSecret ? '已保存 Secret，留空或保持占位符不会覆盖。' : '';
+  document.getElementById('cfg-notify-wework-app-to-user').value = weworkApp.toUser || '@all';
+  document.getElementById('cfg-notify-wework-app-max-retries').value = Number.isFinite(Number(weworkApp.maxRetries)) ? weworkApp.maxRetries : 5;
   document.getElementById('cfg-notify-dingding').value = c.notify?.dingding || '';
   document.getElementById('cfg-notify-feishu').value = c.notify?.feishu || '';
   document.getElementById('cfg-notify-bark').value = c.notify?.bark || '';
@@ -2470,11 +2479,17 @@ async function saveSettingsFromModal() {
       enabled: document.getElementById('cfg-sched-enabled').checked,
       cron: document.getElementById('cfg-sched-cron').value.trim()
     },
-    server: {
-      authPassword: document.getElementById('cfg-auth-password')?.value.trim() || ''
-    },
     notify: {
       wework: document.getElementById('cfg-notify-wework').value.trim(),
+      weworkApp: {
+        enabled: !!document.getElementById('cfg-notify-wework-app-enabled')?.checked,
+        baseUrl: document.getElementById('cfg-notify-wework-app-base-url')?.value.trim() || '',
+        corpId: document.getElementById('cfg-notify-wework-app-corp-id')?.value.trim() || '',
+        agentId: document.getElementById('cfg-notify-wework-app-agent-id')?.value.trim() || '',
+        secret: document.getElementById('cfg-notify-wework-app-secret')?.value.trim() || '',
+        toUser: document.getElementById('cfg-notify-wework-app-to-user')?.value.trim() || '@all',
+        maxRetries: Math.max(0, Math.min(10, Number(document.getElementById('cfg-notify-wework-app-max-retries')?.value) || 0))
+      },
       dingding: document.getElementById('cfg-notify-dingding').value.trim(),
       feishu: document.getElementById('cfg-notify-feishu').value.trim(),
       bark: document.getElementById('cfg-notify-bark').value.trim(),
@@ -2564,7 +2579,20 @@ async function saveGuideSettings() {
 
 window.testNotifyChannel = async function(channel) {
   let val = '';
-  if (channel === 'telegram') {
+  if (channel === 'weworkApp') {
+    const secret = document.getElementById('cfg-notify-wework-app-secret')?.value.trim() || '';
+    val = {
+      enabled: true,
+      baseUrl: document.getElementById('cfg-notify-wework-app-base-url')?.value.trim() || '',
+      corpId: document.getElementById('cfg-notify-wework-app-corp-id')?.value.trim() || '',
+      agentId: document.getElementById('cfg-notify-wework-app-agent-id')?.value.trim() || '',
+      secret,
+      toUser: document.getElementById('cfg-notify-wework-app-to-user')?.value.trim() || '@all',
+      maxRetries: Math.max(0, Math.min(10, Number(document.getElementById('cfg-notify-wework-app-max-retries')?.value) || 0))
+    };
+    if (!val.corpId || !val.agentId) return alert('请先填写企业 CorpID 与 AgentId');
+    if (!val.secret && !currentConfig?.notify?.weworkApp?.hasSecret) return alert('请先填写应用 Secret');
+  } else if (channel === 'telegram') {
     const botToken = document.getElementById('cfg-notify-tg-token')?.value.trim();
     const chatId = document.getElementById('cfg-notify-tg-chat')?.value.trim();
     if (!botToken || !chatId) return alert('请先输入 Telegram Bot Token 和 Chat ID');
@@ -3776,6 +3804,13 @@ let logsModalOpen = false;
 
 function initLogsModal() {
   document.getElementById('btn-open-logs')?.addEventListener('click', openLogsModal);
+  document.getElementById('btn-logout')?.addEventListener('click', async () => {
+    if (!confirm('确定要退出当前管理员登录吗？')) return;
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch {}
+    window.location.href = '/login.html';
+  });
   document.getElementById('btn-close-logs')?.addEventListener('click', closeLogsModal);
   document.getElementById('btn-close-logs-btn')?.addEventListener('click', closeLogsModal);
   document.getElementById('logs-filter')?.addEventListener('input', () => renderLogsModal());

@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -14,6 +15,18 @@ import historyManager from '../core/history.js';
 import browserManager from '../core/browser.js';
 import epicManager from '../core/epic.js';
 import { accountContextLock } from '../core/contextLock.js';
+import {
+  buildAdminLogoutCookie,
+  buildAdminSessionCookie,
+  createAdminSessionToken,
+  getAdminSessionCookieName,
+  hashAdminPassword,
+  normalizeAdminUsername,
+  parseCookies,
+  validateAdminCredentials,
+  verifyAdminPassword,
+  verifyAdminSessionToken
+} from '../core/adminAuth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -272,35 +285,170 @@ async function getNetworkPing() {
 
 export function createServer() {
   const app = express();
+  app.set('trust proxy', 1);
 
-  // 健康检查（免认证）：Docker HEALTHCHECK 用它，否则开启密码后会因 401 被判为不健康
+  // 允许的免认证路径：健康检查与登录相关接口
+  const PUBLIC_PATHS = new Set([
+    '/api/health',
+    '/api/auth/status',
+    '/api/auth/setup',
+    '/api/auth/login',
+    '/api/auth/logout',
+    '/login.html'
+  ]);
+
+  // 简易内存登录失败限流：同一来源 15 分钟内最多 10 次失败
+  const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+  const LOGIN_MAX_FAILURES = 10;
+  const loginFailures = new Map();
+
+  function getClientKey(req) {
+    return String(req.ip || req.socket?.remoteAddress || 'unknown');
+  }
+
+  function isLoginBlocked(req) {
+    const key = getClientKey(req);
+    const entry = loginFailures.get(key);
+    if (!entry) return false;
+    if (Date.now() - entry.firstAt > LOGIN_WINDOW_MS) {
+      loginFailures.delete(key);
+      return false;
+    }
+    return entry.count >= LOGIN_MAX_FAILURES;
+  }
+
+  function recordLoginFailure(req) {
+    const key = getClientKey(req);
+    const now = Date.now();
+    const entry = loginFailures.get(key);
+    if (!entry || now - entry.firstAt > LOGIN_WINDOW_MS) {
+      loginFailures.set(key, { firstAt: now, count: 1 });
+      return;
+    }
+    entry.count += 1;
+  }
+
+  function clearLoginFailures(req) {
+    loginFailures.delete(getClientKey(req));
+  }
+
+  function isPublicPath(pathname) {
+    return PUBLIC_PATHS.has(pathname);
+  }
+
+  function getAdminFromRequest(req) {
+    const auth = configManager.getAdminAuth();
+    if (!auth.passwordHash || !auth.salt || !auth.sessionSecret) return null;
+    const cookies = parseCookies(req.headers.cookie || '');
+    const token = cookies[getAdminSessionCookieName()];
+    const session = verifyAdminSessionToken(token, auth.sessionSecret);
+    return session ? auth : null;
+  }
+
+  // 健康检查（免认证）：Docker HEALTHCHECK 用它，未创建管理员时也必须保持可用
   app.get('/api/health', (req, res) => {
     res.json({ success: true, status: 'ok', uptime: Math.floor(process.uptime()) });
   });
 
-  // 访问控制：当配置了 server.authPassword 时启用 HTTP Basic 认证。
-  // 注意：/api/config 会返回全部账号的 Cookie 与 Token，未设密码时任何能访问该端口的人
-  // 都能拿到账号凭据，强烈建议设置密码（尤其是把端口暴露到内网之外时）。
-  app.use((req, res, next) => {
-    const password = configManager.get()?.server?.authPassword;
-    if (!password) return next();
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.urlencoded({ extended: true }));
 
-    const header = req.headers.authorization || '';
-    if (header.startsWith('Basic ')) {
-      try {
-        const decoded = Buffer.from(header.slice(6), 'base64').toString('utf-8');
-        const sep = decoded.indexOf(':');
-        const pass = sep >= 0 ? decoded.slice(sep + 1) : decoded;
-        if (pass === password) return next();
-      } catch {}
-    }
+  // ===== 管理员登录接口（免认证）=====
 
-    res.set('WWW-Authenticate', 'Basic realm="Microsoft Rewards", charset="UTF-8"');
-    res.status(401).send('需要认证：请在配置中设置 server.authPassword 后使用该密码访问');
+  // 查询初始化与登录状态
+  app.get('/api/auth/status', (req, res) => {
+    const auth = configManager.getAdminAuth();
+    const initialized = !!(auth.passwordHash && auth.salt);
+    const authenticated = !!getAdminFromRequest(req);
+    res.json({
+      success: true,
+      data: {
+        initialized,
+        username: initialized ? auth.username : '',
+        authenticated
+      }
+    });
   });
 
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  // 首次访问：创建管理员账号
+  app.post('/api/auth/setup', async (req, res) => {
+    try {
+      const auth = configManager.getAdminAuth();
+      if (auth.passwordHash && auth.salt) {
+        return res.status(409).json({ success: false, message: '管理员账号已存在，请直接登录' });
+      }
+      const username = normalizeAdminUsername(req.body?.username);
+      const password = String(req.body?.password || '');
+      const confirmPassword = String(req.body?.confirmPassword ?? password);
+      validateAdminCredentials(username, password, confirmPassword);
+
+      const { salt, passwordHash } = await hashAdminPassword(password);
+      const sessionSecret = crypto.randomBytes(32).toString('hex');
+      configManager.setAdminAuth({
+        username,
+        passwordHash,
+        salt,
+        sessionSecret,
+        createdAt: Date.now()
+      });
+
+      const token = createAdminSessionToken(sessionSecret);
+      res.setHeader('Set-Cookie', buildAdminSessionCookie(token, req));
+      logger.log('SEC', '管理员账号已创建');
+      res.json({ success: true, data: { username, initialized: true, authenticated: true } });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  });
+
+  // 登录
+  app.post('/api/auth/login', async (req, res) => {
+    if (isLoginBlocked(req)) {
+      return res.status(429).json({ success: false, message: '登录失败次数过多，请 15 分钟后再试' });
+    }
+    try {
+      const auth = configManager.getAdminAuth();
+      if (!auth.passwordHash || !auth.salt) {
+        return res.status(409).json({ success: false, message: '管理员账号尚未创建，请先完成初始化' });
+      }
+      const username = normalizeAdminUsername(req.body?.username);
+      const password = String(req.body?.password || '');
+      const usernameOk = username === auth.username;
+      const passwordOk = usernameOk && await verifyAdminPassword(password, auth.salt, auth.passwordHash);
+      if (!usernameOk || !passwordOk) {
+        recordLoginFailure(req);
+        return res.status(401).json({ success: false, message: '账号或密码错误' });
+      }
+      clearLoginFailures(req);
+      const sessionSecret = configManager.ensureAdminSessionSecret();
+      const token = createAdminSessionToken(sessionSecret);
+      res.setHeader('Set-Cookie', buildAdminSessionCookie(token, req));
+      logger.log('SEC', '管理员登录成功');
+      res.json({ success: true, data: { username: auth.username, authenticated: true } });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // 登出
+  app.post('/api/auth/logout', (req, res) => {
+    res.setHeader('Set-Cookie', buildAdminLogoutCookie());
+    res.json({ success: true });
+  });
+
+  // ===== 登录保护中间件 =====
+  app.use((req, res, next) => {
+    const pathname = req.path || '/';
+    if (isPublicPath(pathname)) return next();
+    if (getAdminFromRequest(req)) return next();
+
+    // API 返回 JSON，页面请求重定向到登录页
+    if (pathname.startsWith('/api/')) {
+      return res.status(401).json({ success: false, message: '未登录或会话已过期，请重新登录' });
+    }
+    return res.redirect('/login.html');
+  });
+
   app.use(express.static(path.join(__dirname, 'public')));
 
   // 0. 系统硬件与网络实时监控指标
@@ -815,7 +963,7 @@ export function createServer() {
   // 10. 测试通知
   app.post('/api/notify/test', async (req, res) => {
     const { channel, value } = req.body;
-    if (!channel || !value) {
+    if (!channel || value === undefined || value === null || value === '') {
       return res.status(400).json({ success: false, message: '参数缺失' });
     }
     try {

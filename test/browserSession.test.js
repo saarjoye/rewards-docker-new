@@ -50,7 +50,7 @@ test('会话可以往返读写，且落盘文件里不含 _U', () => {
   assert.deepEqual(read.storageState.cookies.map((c) => c.name), ['SRCHHPGUSR', 'MUID']);
 });
 
-test('会话文件权限为 0600', () => {
+test('会话文件权限为 0600', { skip: process.platform === 'win32' ? 'Windows 不支持 POSIX 权限位' : false }, () => {
   writeBrowserSession(ACCOUNT, sampleState());
   const mode = fs.statSync(sessionFilePath(ACCOUNT.id)).mode & 0o777;
   assert.equal(mode, 0o600, '会话文件含登录 Cookie，必须仅属主可读写');
