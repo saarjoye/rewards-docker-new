@@ -3,7 +3,7 @@ version: '3.8'
 services:
   microsoft-rewards:
     # 二开 fork 镜像（GitHub Container Registry 自动构建）
-    image: ghcr.io/saarjoye/microsoft-rewards-docker:latest
+    image: ghcr.io/saarjoye/rewards-docker-new:latest
     build:
       context: .
       dockerfile: Dockerfile
