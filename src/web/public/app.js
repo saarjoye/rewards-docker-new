@@ -42,7 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchConfig();
   fetchHistory(7);
   initLogStream();
-  checkVersionUpdate();
+  loadVersion();
   // 首次打开自动触发官网真实完成度同步（解决新部署到 NAS 时任务全显为 0 的问题）
   fetch('/api/status/sync', { method: 'POST' }).then(() => fetchStatus()).catch(() => {});
   setInterval(fetchStatus, 4000); // 4秒轮询一次任务状态
@@ -199,8 +199,6 @@ function initUIEvents() {
   document.getElementById('btn-run-single-header')?.addEventListener('click', runTasks);
   document.getElementById('btn-stop-single-header')?.addEventListener('click', stopTasks);
 
-  // 版本与状态复合胶囊点击检测更新
-  document.getElementById('version-status-pill')?.addEventListener('click', handleVersionCheckClick);
 
   // 历史记录天数切换
   document.getElementById('btn-history-7')?.addEventListener('click', () => switchHistoryDays(7));
@@ -1339,65 +1337,30 @@ async function fetchSystemMetrics() {
   } catch {}
 }
 
-let updateInfo = null;
 let taskRunning = false;
+// 本地二开版本：仅用于展示，不再监控上游仓库更新。
+let localVersion = '1.7.0';
 
-// 版本与状态复合胶囊的悬停提示（状态 + 是否有新版本，统一在这里合成）
+// 版本胶囊只展示本地版本与运行状态，不再请求上游仓库更新。
 function refreshVersionPillTooltip() {
   const pill = document.getElementById('version-status-pill');
   if (!pill) return;
-  const current = updateInfo?.currentVersion || '1.6.7';
   const statusLine = taskRunning
     ? '🟦 系统状态：正在执行自动化任务打卡中…'
     : '🟢 系统状态：后台定时就绪中';
-  let text = `${statusLine}\n当前版本：v${current}`;
-  if (updateInfo?.hasUpdate) {
-    text += `\n\n🚀 发现新版本 v${updateInfo.latestVersion}！\n${updateInfo.releaseTitle || ''}\n点击查看更新日志与升级方式`;
-  } else {
-    text += `\n✅ 已是最新版本`;
-  }
-  pill.setAttribute('data-tip', text);
+  pill.setAttribute('data-tip', `${statusLine}\n本地二开版本：v${localVersion}`);
 }
 
-async function checkVersionUpdate() {
+async function loadVersion() {
   try {
-    const res = await fetch('/api/system/check-update').then(r => r.json());
-    if (res.success && res.data) {
-      updateInfo = res.data;
-      const indicator = document.getElementById('update-indicator');
-      const updateText = document.getElementById('update-text');
-      const pill = document.getElementById('version-status-pill');
-      if (res.data.hasUpdate) {
-        if (indicator) indicator.style.display = 'inline-flex';
-        if (updateText) updateText.innerText = `发现新版 v${res.data.latestVersion}`;
-        if (pill) pill.classList.add('has-update');
-      } else {
-        if (indicator) indicator.style.display = 'none';
-        if (pill) pill.classList.remove('has-update');
-      }
-      refreshVersionPillTooltip();
-    }
+    const res = await fetch('/api/system/version').then(r => r.json());
+    const current = res?.data?.currentVersion;
+    if (!current) return;
+    localVersion = String(current);
+    const label = document.getElementById('version-label');
+    if (label) label.innerText = `v${localVersion}`;
+    refreshVersionPillTooltip();
   } catch {}
-}
-
-async function handleVersionCheckClick() {
-  if (updateInfo?.hasUpdate) {
-    const ok = await showWebConfirm(
-      `发现新版本 v${updateInfo.latestVersion}（当前 v${updateInfo.currentVersion}）。\n\n更新说明：${updateInfo.releaseTitle || '暂无说明'}\n\n是否前往 GitHub 查看更新日志？`,
-      '发现新版本'
-    );
-    if (ok) {
-      window.open(updateInfo.releaseUrl, '_blank');
-    }
-  } else {
-    openEpicActionModal(
-      '版本检查',
-      `当前运行版本 v${updateInfo?.currentVersion || '1.6.7'} 已是最新版本。`,
-      ['获取远端版本', '比较版本号', '确认无需更新'],
-      3
-    );
-    updateEpicActionModal({ progress: 100, badge: { text: '已是最新', cls: 'ok' } });
-  }
 }
 
 function renderBrowserMonitor(b) {
@@ -1705,7 +1668,12 @@ function formatPunchCardTooltip(t) {
     const isDone = t.done || (t.max > 0 && t.progress >= t.max);
     
     let subtext = isDone ? '状态: ✅ 已完成' : (running ? '状态: ⏳ 进行中' : '状态: 待执行');
-    let pointsBadge = `+${t.points || 0} 积分`;
+    const taskPoints = Number(t.points || 0);
+    // 非打孔卡任务的 points 是「完成可得的固定奖励」，未完成时必须写明「可得」，
+    // 否则用户会误以为这些分已经到账。
+    let pointsBadge = isDone
+      ? `已得 +${taskPoints} 积分`
+      : (taskPoints > 0 ? `可得 +${taskPoints} 积分` : '+0 积分');
     let progressLabel = `进度: ${t.progress || 0} / ${t.max || 1} ${t.unit || ''}`;
     let progPercent = t.max > 0 ? Math.min(100, Math.round((t.progress / t.max) * 100)) : (isDone ? 100 : 0);
 
@@ -1715,16 +1683,19 @@ function formatPunchCardTooltip(t) {
       const m = Number(t.max || (key === 'desktopApp' ? 8 : (key === 'quest_halloween' ? 6 : 5))) || 1;
       progPercent = Math.min(100, Math.round((p / m) * 100));
       const typeLabel = t.name?.includes('每周') ? '每周打孔卡' : (t.name?.includes('月') ? '每月打孔卡' : '活动打孔卡');
+      const punchPoints = Number(t.points || (key === 'desktopApp' ? 20 : 50));
       if (isDone) {
         subtext = `已全部达成 · ${typeLabel} (悬停查看记录)`;
+        pointsBadge = `已得 +${punchPoints} 积分`;
       } else if (t.available === false && p === 0) {
         subtext = `未检测到该任务 · ${typeLabel}`;
         pointsBadge = '+0 积分';
       } else {
         subtext = t.expiresText ? `${t.expiresText} · ${typeLabel} (悬停查看记录)` : `${typeLabel} (悬停查看记录)`;
+        // 打孔卡逐项解锁、全部完成才结算，未完成时显示「满额可得」，避免误读为已得分。
+        pointsBadge = `满额 +${punchPoints} 积分 (当前未得)`;
       }
       progressLabel = `进度: ${p} / ${m} 个任务`;
-      pointsBadge = `+${t.points || (key === 'desktopApp' ? 20 : 50)} 积分`;
       card.setAttribute('data-tip', formatPunchCardTooltip(t));
       card.style.cursor = 'help';
     }

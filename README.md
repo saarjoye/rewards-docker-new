@@ -4,7 +4,7 @@
 > 配备全新**现代化深色 Fluent 毛玻璃控制台**、**小白一键可视化配置向导**、**HTTP/SOCKS5 代理支持**、**国区防风控锁**与**多渠道消息推送**。
 
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v1.6.7-blue.svg)](https://github.com/wangheqiang530/microsoft-rewards-docker)
+[![Version](https://img.shields.io/badge/Version-v1.7.0-blue.svg)](https://github.com/saarjoye/microsoft-rewards-docker)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
@@ -88,6 +88,15 @@
   - **校验与更新进度弹窗**：彻底替换系统阻塞式弹窗，新增平滑网页对话框与分阶段动态进度条，直观追踪「初始化-打开商城-验证会话-核销订单」完整链路；
   - **全账号编辑入口与凭据维护**：微软账号卡片、顶部操作栏与任务网格均配备「✏️ 编辑账号」按钮，Cookie 失效时一键覆盖或清空，修改无缝即时生效；
   - **单元测试增至 55 个**。
+- 🔧 **二开加固：无头搜索稳定性、今日已增口径与登录体验 (全新 v1.7.0)**：
+  - **修复无头浏览器 Cookie 注入失败**：重写 Cookie 解析，完整支持 Header String、Safari 制表符文本与 Netscape cookie-jar，并自动剔除 Path/Domain/Expires 等非法属性，彻底解决 `addCookies: Invalid cookie fields`；新增 `addCookiesSafely` 注入兜底，异常时逐条降级注入而不是整批失败；
+  - **修复「全部账号官网同步」后今日已增全部变 0**：官网今日积分解析失败时不再被 `Number(null)=0` 误判成「今天得了 0 分」；当天首次同步刚记录起始余额的余额差恒为 0，已禁止用该轮余额差覆盖历史展示值，只有余额确实增加时才回退到余额差口径；
+  - **明确积分口径文案**：打孔卡未完成时头像角标显示「满额 +N 积分 (当前未得)」，避免把「完成可得」误读成「已经到手」；
+  - **停止监控上游仓库更新**：版本胶囊只展示本地版本与运行状态，不再请求 `api.github.com`，避免二开内容被上游更新覆盖；新增 `/api/system/version` 本地版本接口；
+  - **修复顶部栏主题切换组选中态错位**：三个主题按钮改为等宽等高圆形按钮，选中态为实心圆底衬，窄屏不再变形；
+  - **新增首次登录强制创建管理员账号密码**与**企业微信应用（WeCom App）消息推送**；
+  - **浏览器标题改为 `Rewards`**，不再与官网标题一致；
+  - **单元测试增至 92 个**（新增官网同步积分口径、无头浏览器 Cookie 注入回归）。
 - 🛑 **Epic 停止按钮与领取链路加固 (全新 v1.6.7)**：
   - **Epic 浏览器状态新增手动停止按钮**：领取或校验占用浏览器资源时，可立即关闭当前持久化上下文并释放浏览器锁，不再阻塞微软积分任务；
   - **结账按钮文案自适应**：补齐 Epic 当前使用的「添加到库 / Add to Library」结账按钮，避免商品页加载正常却误报“未出现下单按钮”；
@@ -155,9 +164,7 @@ version: '3.8'
 
 services:
   microsoft-rewards:
-    image: wangheqiang/microsoft-rewards-docker:latest
-    # 或者使用 GitHub 镜像：
-    # image: ghcr.io/wangheqiang530/microsoft-rewards-docker:latest
+    image: ghcr.io/saarjoye/microsoft-rewards-docker:latest
     container_name: ms-rewards
     restart: unless-stopped
     ports:
@@ -187,7 +194,7 @@ docker run -d \
   -p 5308:5308 \
   -v $(pwd)/data:/app/data \
   -e TZ=Asia/Shanghai \
-  wangheqiang/microsoft-rewards-docker:latest
+  ghcr.io/saarjoye/microsoft-rewards-docker:latest
 ```
 
 ---
@@ -196,7 +203,7 @@ docker run -d \
 
 ```bash
 # 1. 克隆代码仓库
-git clone https://github.com/wangheqiang530/microsoft-rewards-docker.git
+git clone https://github.com/saarjoye/microsoft-rewards-docker.git
 cd microsoft-rewards-docker
 
 # 2. 安装依赖

@@ -81,40 +81,145 @@ class BrowserManager extends EventEmitter {
     return this.state;
   }
 
+  /**
+   * 解析用户粘贴的 Cookie 字符串。
+   *
+   * 支持三种常见来源：
+   *   1. 浏览器 DevTools「请求标头」里的 Cookie 头（分号分隔，可能混入 Path/Domain/Expires 等属性）
+   *   2. Safari / 表格复制（每行「名称<TAB>值」）
+   *   3. curl / Netscape cookie-jar（域、子域标志、路径、Secure、过期、名、值）
+   *
+   * 关键点：Cookie 属性（Path、Domain、Expires…）不是 Cookie，绝不能传给
+   * Chromium 的 Storage.setCookies，否则整批注入都会以
+   * "Protocol error (Storage.setCookies): Invalid cookie fields" 失败，
+   * 导致账号直接掉登录态。
+   */
   parseCookies(cookieStr, defaultDomain = '.bing.com') {
     if (!cookieStr || typeof cookieStr !== 'string') return [];
-    const list = [];
-    const parts = cookieStr.split(/[;\r\n]+/);
-    for (const part of parts) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      let name = '', value = '';
-      if (trimmed.includes('\t') && !trimmed.includes('=')) {
-        const cols = trimmed.split('\t');
-        name = cols[0].trim();
-        value = cols[1].trim();
-      } else {
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx > 0) {
-          name = trimmed.slice(0, eqIdx).trim();
-          value = trimmed.slice(eqIdx + 1).trim();
-        }
+    const rawDomain = String(defaultDomain || '.bing.com').trim() || '.bing.com';
+    const domain = rawDomain.startsWith('.') ? rawDomain : '.' + rawDomain;
+    // __Host- 前缀 Cookie 不允许 Domain 属性，必须绑定到具体主机 +
+    // Secure + Path=/。Bing 的网页登录站点统一走 cn.bing.com。
+    const host = domain.endsWith('bing.com') ? 'cn.bing.com' : domain.replace(/^\./, '');
+
+    // Cookie 属性名（大小写不敏感），出现即说明它是属性而不是 Cookie。
+    const ATTRIBUTE_NAMES = new Set([
+      'path', 'domain', 'expires', 'max-age', 'httponly', 'secure',
+      'samesite', 'priority', 'partitioned', 'comment', 'commenturl',
+      'discard', 'port', 'version'
+    ]);
+    // RFC 6265 token：Cookie 名只允许这些字符。
+    const TOKEN_RE = /^[!#$%&'*+\-.^_\x60|~0-9A-Za-z]+$/;
+    // Chromium 拒绝超过约 4096 字节的单条 Cookie。
+    const MAX_COOKIE_BYTES = 4096;
+
+    const list = new Map();
+
+    // 归一化后入队。返回实际写入的 Cookie 对象，便于调用方补正 path。
+    const push = (rawName, rawValue, domainOverride) => {
+      const name = String(rawName == null ? '' : rawName).trim();
+      let value = String(rawValue == null ? '' : rawValue).trim();
+      if (!name) return null;
+      // 身份追踪 Cookie，注入后会造成串号 / 跳登录页。
+      if (name.toUpperCase() === '_EDGE_S') return null;
+      // $Version / $Path 等旧式属性标记。
+      if (name.startsWith('$')) return null;
+      // Path、Domain、Expires、HttpOnly、Secure、SameSite 等属性不是 Cookie。
+      if (ATTRIBUTE_NAMES.has(name.toLowerCase())) return null;
+      if (!TOKEN_RE.test(name)) return null;
+      // Safari 复制会带一层引号，剥掉后才是真实值。
+      if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+        value = value.slice(1, -1);
       }
-      if (name && name !== '_EDGE_S') {
-        if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
-          value = value.slice(1, -1);
-        }
-        list.push({
+      // 控制字符会让 CDP Storage.setCookies 整批失败，必须提前剔除。
+      if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+      // 超长 Cookie 同样会让 Chromium 拒绝整批请求。
+      if (Buffer.byteLength(name + '=' + value, 'utf8') > MAX_COOKIE_BYTES) return null;
+
+      const itemDomain = String(domainOverride || domain).trim() || domain;
+      let cookie;
+      if (name.startsWith('__Host-')) {
+        // __Host- 必须不带 domain、Secure、Path=/，用 url 形式最稳。
+        cookie = {
           name,
           value,
-          domain: defaultDomain,
-          path: '/'
-        });
+          url: 'https://' + host + '/',
+          secure: true,
+          sameSite: 'Lax',
+          expires: -1
+        };
+      } else {
+        cookie = {
+          name,
+          value,
+          domain: itemDomain,
+          path: '/',
+          secure: true,
+          sameSite: 'Lax',
+          expires: -1
+        };
+      }
+      // 同名 Cookie 保留最后一次出现的值，且保持首次插入顺序。
+      const key = (cookie.domain || cookie.url) + '\u0000' + name + '\u0000' + (cookie.path || '');
+      list.set(key, cookie);
+      return cookie;
+    };
+
+    for (const rawLine of cookieStr.split(/\r?\n/)) {
+      let line = rawLine.trim();
+      if (!line) continue;
+      // curl cookie-jar 的 HttpOnly 行以 #HttpOnly_ 开头，仍然属于真实 Cookie。
+      if (line.startsWith('#HttpOnly_')) {
+        line = line.slice('#HttpOnly_'.length);
+      } else if (line.startsWith('#')) {
+        continue;
+      }
+
+      // Netscape / curl cookie-jar：域、子域标志、路径、Secure、过期、名、值
+      const cells = line.split('\t').map(c => c.trim());
+      if (cells.length >= 7 && cells[2].startsWith('/')) {
+        const cookie = push(cells[5], cells[6], cells[0]);
+        if (cookie) cookie.path = cells[2] || '/';
+        continue;
+      }
+
+      // 其余情况一律按分号拆分；Safari 的「名<TAB>值」由 tab 分支识别。
+      for (const part of line.split(';')) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const tabIdx = trimmed.indexOf('\t');
+        const eqIdx = trimmed.indexOf('=');
+        if (tabIdx > 0 && (eqIdx < 0 || tabIdx < eqIdx)) {
+          push(trimmed.slice(0, tabIdx), trimmed.slice(tabIdx + 1));
+        } else if (eqIdx > 0) {
+          push(trimmed.slice(0, eqIdx), trimmed.slice(eqIdx + 1));
+        }
       }
     }
-    return list;
-  }
 
+    return [...list.values()];
+  }
+  async addCookiesSafely(context, cookies, accName = '当前账号') {
+    if (!Array.isArray(cookies) || cookies.length === 0) return 0;
+
+    try {
+      await context.addCookies(cookies);
+      return cookies.length;
+    } catch (e) {
+      logger.log('🟡', `批量注入 Cookie 失败，正在逐个隔离无效项: ${e.message}`, '', accName);
+    }
+
+    let added = 0;
+    for (const cookie of cookies) {
+      try {
+        await context.addCookies([cookie]);
+        added += 1;
+      } catch (e) {
+        logger.log('🟡', `已跳过无效 Cookie ${cookie.name}: ${e.message}`, '', accName);
+      }
+    }
+    return added;
+  }
   async launchBrowser(acc) {
     const execPath = this.getExecutablePath();
     if (!execPath) {
@@ -213,11 +318,15 @@ class BrowserManager extends EventEmitter {
         } catch {}
       });
 
-      // 注入当前账号的完整 Cookie
+      // 注入当前账号的完整 Cookie。
+      // 只解析一次并使用安全注入：__Host- 走 URL 形式，其它 Cookie 走 .bing.com。
+      // 若其中仍有 Chromium 不接受的项，逐个隔离，避免一整批登录态全部丢失。
       if (acc?.cookie) {
         const cookies = this.parseCookies(acc.cookie, '.bing.com');
-        const cnCookies = this.parseCookies(acc.cookie, 'cn.bing.com');
-        await context.addCookies([...cookies, ...cnCookies]);
+        const added = await this.addCookiesSafely(context, cookies, acc?.name);
+        if (added < cookies.length) {
+          logger.log('🟡', `Cookie 注入完成 ${added}/${cookies.length} 项，其余无效项已跳过`, '', acc?.name);
+        }
       }
 
       this.browser = browser;

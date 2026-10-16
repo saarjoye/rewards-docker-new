@@ -31,7 +31,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.6.7';
+const CURRENT_VERSION = '1.7.0';
 
 let lastCpuInfo = os.cpus().map(c => c.times);
 
@@ -253,22 +253,6 @@ function sumContainerProcessRss() {
 
 let lastPingMs = 28;
 let lastPingTime = 0;
-
-/**
- * 语义化版本号比较（返回 >0 表示 a 比 b 新）。
- * 不能用字符串直接比较：字符串比较下 "1.4.9" 会大于 "1.4.10"，从而误报有新版本。
- */
-function compareVersions(a, b) {
-  const parse = v => String(v || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  const pa = parse(a);
-  const pb = parse(b);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
 
 async function getNetworkPing() {
   if (Date.now() - lastPingTime < 8000) return lastPingMs;
@@ -520,48 +504,31 @@ export function createServer() {
     }
   });
 
-  // 0.5 检查版本更新
-  let cachedRelease = null;
-  let cachedReleaseTime = 0;
-  app.get('/api/system/check-update', async (req, res) => {
-    try {
-      if (!cachedRelease || Date.now() - cachedReleaseTime > 10 * 60 * 1000) {
-        const ghRes = await fetch('https://api.github.com/repos/wangheqiang530/microsoft-rewards-docker/releases/latest', {
-          headers: { 'User-Agent': 'microsoft-rewards-docker' },
-          signal: AbortSignal.timeout(3500)
-        }).then(r => r.json());
-        if (ghRes && ghRes.tag_name) {
-          cachedRelease = ghRes;
-          cachedReleaseTime = Date.now();
-        }
+  // 0.5 本地版本信息：这是二开版本，不再请求或监控上游仓库更新。
+  // 保留旧路径作为兼容接口，避免旧页面缓存命中时产生 404。
+  app.get('/api/system/version', (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        currentVersion: CURRENT_VERSION,
+        updateMode: 'local'
       }
+    });
+  });
 
-      const currentVersion = CURRENT_VERSION;
-      const latestTag = cachedRelease?.tag_name?.replace(/^v/, '') || currentVersion;
-      const hasUpdate = compareVersions(latestTag, currentVersion) > 0;
-
-      res.json({
-        success: true,
-        data: {
-          currentVersion,
-          latestVersion: latestTag,
-          hasUpdate,
-          releaseUrl: cachedRelease?.html_url || 'https://github.com/wangheqiang530/microsoft-rewards-docker/releases/latest',
-          releaseTitle: cachedRelease?.name || `v${latestTag}`,
-          releaseNotes: cachedRelease?.body || ''
-        }
-      });
-    } catch {
-      res.json({
-        success: true,
-        data: {
-          currentVersion: CURRENT_VERSION,
-          latestVersion: CURRENT_VERSION,
-          hasUpdate: false,
-          releaseUrl: 'https://github.com/wangheqiang530/microsoft-rewards-docker/releases'
-        }
-      });
-    }
+  app.get('/api/system/check-update', (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        currentVersion: CURRENT_VERSION,
+        latestVersion: CURRENT_VERSION,
+        hasUpdate: false,
+        updateMode: 'local',
+        releaseUrl: null,
+        releaseTitle: '',
+        releaseNotes: ''
+      }
+    });
   });
 
   // 1. 获取当前状态（支持按账号过滤）

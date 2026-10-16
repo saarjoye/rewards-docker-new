@@ -209,24 +209,49 @@ export class TaskManager {
   /**
    * 重算「今日已增积分」。
    *
-   * 唯一权威来源是官网 earn 页顶部「今日积分」；取不到时才回退到
-   * 「当前余额 − 今日起始余额」。绝不再用「各任务积分求和」——
-   * 那会把没做的任务也算进去（实测能虚高几十点）。
+   * 唯一权威来源是官网 earn 页顶部「今日积分」；只有解析到官网数字时才写入
+   * earned（哪怕是 0，那是官网明确说的 0）。取不到官网数字时才回退到
+   * 「当前余额 − 今日起始余额」，而且只在能明确证明「今天确实变多了」时写入。
+   *
+   * 绝不再用「各任务积分求和」——那会把没做的任务也算进去（实测能虚高几十点）。
    */
-  applyEarned(accStats, officialTodayPoints) {
+  applyEarned(accStats, officialTodayPoints, options = {}) {
     if (!accStats) return;
+    // 注意：Number(null) === 0、Number('') === 0，如果直接转数字，会把
+    // 「官网没解析到今日积分」误当成「今日确实得了 0 分」，从而在官网同步后
+    // 把正确的历史值清零。必须先显式排除空值。
+    if (officialTodayPoints === null || officialTodayPoints === undefined || officialTodayPoints === '') {
+      return this.applyEarnedFromBalanceDelta(accStats, options);
+    }
     const official = Number(officialTodayPoints);
     if (Number.isFinite(official) && official >= 0) {
       accStats.earned = official;
       accStats.earnedSource = 'official';
       return;
     }
+    return this.applyEarnedFromBalanceDelta(accStats, options);
+  }
+
+  /**
+   * 回退口径：当前余额 − 今日起始余额。
+   *
+   * 这个口径只有在「今日起始余额是在本次同步之前记录的」时才可信：
+   * 本次同步刚记录起始余额时，余额差恒为 0，用它覆盖已有历史值就会
+   * 造成「点一次官网同步，今日已增全部变 0」的 Bug。
+   *
+   * 另外只在余额确实变多（delta > 0）时才写入；delta 为 0 时无法区分
+   * 「今天还没赚分」和「官网今日积分没解析到」，此时保留原值更安全。
+   */
+  applyEarnedFromBalanceDelta(accStats, options = {}) {
+    if (options.allowBalanceDelta === false) return;
     const start = Number(accStats.startBalance);
     const now = Number(accStats.balance);
-    if (accStats.startBalanceDate === this.getTodayNum() && Number.isFinite(start) && Number.isFinite(now) && start > 0) {
-      accStats.earned = Math.max(0, now - start);
-      accStats.earnedSource = 'balance-delta';
-    }
+    const isToday = accStats.startBalanceDate === this.getTodayNum();
+    if (!isToday || !Number.isFinite(start) || !Number.isFinite(now) || start <= 0) return;
+    const delta = now - start;
+    if (delta <= 0) return;
+    accStats.earned = delta;
+    accStats.earnedSource = 'balance-delta';
   }
 
   updateTask(key, partial, accountId = null) {
@@ -457,14 +482,16 @@ export class TaskManager {
           }
         }
 
-        // 今日已增积分：以官网「今日积分」为准，取不到才回退到余额差
-        this.applyEarned(accStats, info.todayPoints);
-        // 每天第一次拿到余额时记录「今日起始余额」，供回退口径使用
-        if (accStats.startBalanceDate !== this.getTodayNum() && Number(accStats.balance) > 0) {
+        // 每天第一次拿到余额时记录「今日起始余额」。
+        // 记录后本次同步的余额差恒为 0，因此这一轮禁止用余额差覆盖 earned，
+        // 否则「全部账号官网同步」会把今日已增的展示值全部清零。
+        const hadStartBalanceToday = accStats.startBalanceDate === this.getTodayNum() && Number(accStats.startBalance) > 0;
+        if (!hadStartBalanceToday && Number(accStats.balance) > 0) {
           accStats.startBalance = Number(accStats.balance);
           accStats.startBalanceDate = this.getTodayNum();
-          this.applyEarned(accStats, info.todayPoints);
         }
+        // 今日已增积分：以官网「今日积分」为准，取不到才回退到余额差。
+        this.applyEarned(accStats, info.todayPoints, { allowBalanceDelta: hadStartBalanceToday });
         accStats.lastUpdate = Date.now();
         this.saveStats();
         return accStats;
