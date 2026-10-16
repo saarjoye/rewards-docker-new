@@ -17,6 +17,28 @@ const EARN_FIXTURE = `
 <script>self.__next_f.push([1,"d:\\"href\\":\\"/earn/quest/ENWW_pcparent_FY27_BingMonthlyPC_Oct_punchcard\\""])</script>
 `;
 
+function withRoutedNetwork(routes, fn) {
+  const origRequest = networkClient.request;
+  const origRead = rewardsApi.getReadProgress;
+  const origBalance = rewardsApi.getBalance;
+  networkClient.request = async (options) => {
+    const url = String(options?.url || '');
+    if (url.includes('panelflyout/getuserinfo')) return routes.flyout ?? '';
+    if (url.includes('/dashboard')) return routes.dashboard ?? '';
+    if (url.includes('/earn')) return routes.earn ?? '';
+    throw new Error('unexpected request: ' + url);
+  };
+  rewardsApi.getReadProgress = async () => null;
+  rewardsApi.getBalance = async () => null;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      networkClient.request = origRequest;
+      rewardsApi.getReadProgress = origRead;
+      rewardsApi.getBalance = origBalance;
+    });
+}
+
 function withStubbedNetwork(html, fn) {
   const origRequest = networkClient.request;
   const origRead = rewardsApi.getReadProgress;
@@ -41,6 +63,48 @@ test('getRewardsInfo 解析官网「今日积分」与余额', async () => {
     assert.equal(info.balance, 51355);
     assert.deepEqual(info.pc, { progress: 60, max: 60 });
   });
+});
+
+test('getRewardsInfo 优先使用 cn.bing.com panelflyout 的官方今日积分', async () => {
+  const flyoutFixture = JSON.stringify({
+    userInfo: { balance: 3984 },
+    flyoutResult: {
+      userStatus: {
+        availablePoints: 3984,
+        totalBalance: 3984,
+        counters: {
+          PCSearch: [{ pointProgress: 12, pointProgressMax: 60 }],
+          DailyPoint: [{ pointProgress: 600, pointProgressMax: 3805 }]
+        }
+      }
+    }
+  });
+
+  await withRoutedNetwork({ earn: EARN_FIXTURE, dashboard: '', flyout: flyoutFixture }, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.ok(info, '应返回解析结果');
+    assert.equal(info.todayPoints, 600, '今日积分应取 panelflyout 的官方实时值');
+    assert.equal(info.balance, 3984, '余额应优先取 panelflyout');
+    assert.deepEqual(info.pc, { progress: 12, max: 60 }, 'PC 搜索进度应取 panelflyout');
+  });
+});
+
+test('parseFlyoutRewardsInfo 兼容 JSON 字符串与大小写不同的计数器字段', async () => {
+  const raw = JSON.stringify({
+    userInfo: { balance: '4,123' },
+    flyoutResult: {
+      userStatus: {
+        counters: {
+          dailyPoint: { pointProgress: '641' },
+          pcSearch: { pointProgress: '20', pointProgressMax: '60' }
+        }
+      }
+    }
+  });
+  const parsed = rewardsApi.parseFlyoutRewardsInfo(raw);
+  assert.equal(parsed.todayPoints, 641);
+  assert.equal(parsed.balance, 4123);
+  assert.deepEqual(parsed.pc, { progress: 20, max: 60 });
 });
 
 test('getRewardsInfo 解析必应应用连签真实状态', async () => {

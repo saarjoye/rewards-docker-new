@@ -393,12 +393,65 @@ export class RewardsApi {
   }
 
   /**
+   * 解析 cn.bing.com 飞出面板返回的官方积分数据。
+   * 该接口的 Content-Type 有时错误地标成 text/html，但响应体实际是 JSON；
+   * 因此这里只按响应内容解析，不依赖 Content-Type。
+   */
+  parseFlyoutRewardsInfo(raw) {
+    let data = raw;
+    if (typeof raw === 'string') {
+      const text = raw.trim();
+      if (!text) return null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+    if (!data || typeof data !== 'object') return null;
+
+    const pick = value => Array.isArray(value) ? value[0] : value;
+    const toNumber = value => {
+      if (value === null || value === undefined || value === '') return null;
+      const n = Number(String(value).replace(/,/g, ''));
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const counters = data?.flyoutResult?.userStatus?.counters || {};
+    const daily = pick(counters.DailyPoint ?? counters.dailyPoint);
+    const pc = pick(counters.PCSearch ?? counters.pcSearch);
+    const mobile = pick(counters.MobileSearch ?? counters.mobileSearch);
+
+    const todayPoints = toNumber(daily?.pointProgress ?? daily?.progress ?? daily?.point_progress);
+    const balance = toNumber(
+      data?.userInfo?.balance
+      ?? data?.flyoutResult?.userStatus?.availablePoints
+      ?? data?.flyoutResult?.userStatus?.totalBalance
+    );
+    const pcProgress = toNumber(pc?.pointProgress ?? pc?.progress);
+    const pcMax = toNumber(pc?.pointProgressMax ?? pc?.max);
+    const mobileProgress = toNumber(mobile?.pointProgress ?? mobile?.progress);
+    const mobileMax = toNumber(mobile?.pointProgressMax ?? mobile?.max);
+
+    return {
+      todayPoints,
+      balance,
+      pc: (pcProgress !== null || pcMax !== null)
+        ? { progress: pcProgress ?? 0, max: pcMax ?? 0 }
+        : null,
+      mobile: (mobileProgress !== null || mobileMax !== null)
+        ? { progress: mobileProgress ?? 0, max: mobileMax ?? 0 }
+        : null
+    };
+  }
+
+  /**
    * 获取用户积分、各项任务配额与明细 (Dashboard Info)
    */
   async getRewardsInfo(maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const [html, dashHtml] = await Promise.all([
+        const [html, dashHtml, flyoutRaw] = await Promise.all([
           networkClient.request({
             url: 'https://rewards.bing.com/earn',
             headers: pcPageHeaders()
@@ -406,14 +459,23 @@ export class RewardsApi {
           networkClient.request({
             url: 'https://rewards.bing.com/dashboard',
             headers: pcPageHeaders()
+          }).catch(() => ''),
+          networkClient.request({
+            url: `https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards&_=${Date.now()}`,
+            headers: pcXhrHeaders({
+              'referer': 'https://www.bing.com/',
+              'sec-fetch-site': 'same-site'
+            })
           }).catch(() => '')
         ]);
+        const flyout = this.parseFlyoutRewardsInfo(flyoutRaw);
         const clean = String(html || '').replace(/\\"/g, '"');
         const cleanDash = String(dashHtml || '').replace(/\\"/g, '"');
-        let balance = 0;
-        let pcMax = 60, pcCur = 0, mobMax = 0, mobCur = 0;
+        let balance = Number.isFinite(flyout?.balance) ? flyout.balance : 0;
+        let pcMax = flyout?.pc?.max ?? 60, pcCur = flyout?.pc?.progress ?? 0;
+        let mobMax = flyout?.mobile?.max ?? 0, mobCur = flyout?.mobile?.progress ?? 0;
         let dailyOffer = 0;
-        let searchQuotaFound = false;
+        let searchQuotaFound = !!flyout?.pc;
 
         const pcIdx = clean.indexOf('"pointsCounters":{');
         if (pcIdx !== -1) {
@@ -433,26 +495,30 @@ export class RewardsApi {
           } catch {}
         }
 
-        const balMatch = clean.match(/"balance":(\d+)/) || clean.match(/"availablePoints":(\d+)/);
-        if (balMatch) {
-          balance = parseInt(balMatch[1], 10);
-        } else {
-          const cookieStr = networkClient.getCookieString('https://rewards.bing.com');
-          const mCookieBal = cookieStr.match(/rc=(\d+)/) || cookieStr.match(/rb=(\d+)/);
-          if (mCookieBal) {
-            balance = parseInt(mCookieBal[1], 10);
+        if (!Number.isFinite(flyout?.balance)) {
+          const balMatch = clean.match(/"balance":(\d+)/) || clean.match(/"availablePoints":(\d+)/);
+          if (balMatch) {
+            balance = parseInt(balMatch[1], 10);
+          } else {
+            const cookieStr = networkClient.getCookieString('https://rewards.bing.com');
+            const mCookieBal = cookieStr.match(/rc=(\d+)/) || cookieStr.match(/rb=(\d+)/);
+            if (mCookieBal) {
+              balance = parseInt(mCookieBal[1], 10);
+            }
           }
         }
 
         // 官方「今日积分」：earn 页顶部那张卡片直接展示的真实今日增量。
         // 这是唯一权威的「今日已增」来源，比「各任务积分求和」可靠得多
         // （旧实现求和会把没做的任务也算进去，实测能虚高几十点）。
-        let todayPoints = null;
-        const todayMatch = clean.match(/"children":"今日积分"[\s\S]{0,1600}?"className":"text-pageHeader","children":"(\d+)"/)
-          || clean.match(/今日积分<\/p>[\s\S]{0,1200}?class="text-pageHeader">(\d+)</);
-        if (todayMatch) {
-          const n = parseInt(todayMatch[1], 10);
-          if (Number.isFinite(n)) todayPoints = n;
+        let todayPoints = Number.isFinite(flyout?.todayPoints) ? flyout.todayPoints : null;
+        if (todayPoints === null) {
+          const todayMatch = clean.match(/"children":"今日积分"[\s\S]{0,1600}?"className":"text-pageHeader","children":"(\d+)"/)
+            || clean.match(/今日积分<\/p>[\s\S]{0,1200}?class="text-pageHeader">(\d+)</);
+          if (todayMatch) {
+            const n = parseInt(todayMatch[1], 10);
+            if (Number.isFinite(n)) todayPoints = n;
+          }
         }
 
         // 如果页面未取到有效余额，尝试通过移动端 DAPI 接口获取真实账户余额
@@ -483,6 +549,25 @@ export class RewardsApi {
           pcMax = toNum(searchRscMatch[2]);
           searchQuotaFound = pcMax > 0;
           todayDetails.push({ title: '必应搜索', points: pcCur, max: pcMax });
+        }
+
+        // 飞出面板的计数器是实时值；页面数据能解析时才用它兜底。
+        if (flyout?.pc) {
+          pcCur = flyout.pc.progress;
+          pcMax = flyout.pc.max;
+          searchQuotaFound = pcMax > 0 || pcCur > 0;
+          const row = todayDetails.find(d => d.title === '必应搜索');
+          if (row) {
+            row.points = pcCur;
+            row.max = pcMax;
+          } else {
+            todayDetails.push({ title: '必应搜索', points: pcCur, max: pcMax });
+          }
+        }
+        if (flyout?.mobile) {
+          mobCur = flyout.mobile.progress;
+          mobMax = flyout.mobile.max;
+          searchQuotaFound = searchQuotaFound || mobMax > 0 || mobCur > 0;
         }
 
         let readProgress = 0, readMax = 30;
