@@ -573,10 +573,18 @@ function initUIEvents() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cookie, accountId: guideDraftAccount.id })
       }).then(r => r.json());
-      if (testRes.success && testRes.data?.valid) {
-        resultDiv.innerHTML = `<span style="color:#34D399;">✅ ${escapeHtml(testRes.data.message)}</span>`;
+      const d = testRes.data || {};
+      if (testRes.success && d.valid) {
+        const meta = getIdentityMeta(d);
+        resultDiv.innerHTML = `<span style="color:#34D399;">✅ ${escapeHtml(d.message || 'Cookie 有效')}</span>`
+          + identityInlineHtml(d);
+      } else if (isIdentityUnavailable(d)) {
+        resultDiv.innerHTML = `<span style="color:#F59E0B;">⚠️ Cookie 有效性暂时无法确认</span>`
+          + `<div style="margin-top:5px; color:#F59E0B;">${escapeHtml(d.message || testRes.message || '')}</div>`
+          + identityInlineHtml(d);
       } else {
-        resultDiv.innerHTML = `<span style="color:#EF4444;">❌ ${escapeHtml(testRes.data?.message || testRes.message || 'Cookie 检测无效')}</span>`;
+        resultDiv.innerHTML = `<span style="color:#EF4444;">❌ ${escapeHtml(d.message || testRes.message || 'Cookie 检测无效')}</span>`
+          + identityInlineHtml(d);
       }
     } catch (e) {
       resultDiv.innerHTML = `<span style="color:#EF4444;">❌ 检测请求出错: ${escapeHtml(e.message)}</span>`;
@@ -655,10 +663,17 @@ function initUIEvents() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cookie: input || SECRET_PLACEHOLDER, accountId: targetId })
       }).then(r => r.json());
-      if (testRes.success && testRes.data?.valid) {
-        if (resDiv) resDiv.innerHTML = `<span style="color:#34D399;">✅ ${escapeHtml(testRes.data.message)}</span>`;
+      const d = testRes.data || {};
+      if (testRes.success && d.valid) {
+        if (resDiv) resDiv.innerHTML = `<span style="color:#34D399;">✅ ${escapeHtml(d.message || 'Cookie 有效')}</span>`
+          + identityInlineHtml(d);
+      } else if (isIdentityUnavailable(d)) {
+        if (resDiv) resDiv.innerHTML = `<span style="color:#F59E0B;">⚠️ Cookie 有效性暂时无法确认</span>`
+          + `<div style="margin-top:5px; color:#F59E0B;">${escapeHtml(d.message || testRes.message || '')}</div>`
+          + identityInlineHtml(d);
       } else {
-        if (resDiv) resDiv.innerHTML = `<span style="color:#EF4444;">❌ ${escapeHtml(testRes.data?.message || testRes.message || 'Cookie 检测无效')}</span>`;
+        if (resDiv) resDiv.innerHTML = `<span style="color:#EF4444;">❌ ${escapeHtml(d.message || testRes.message || 'Cookie 检测无效')}</span>`
+          + identityInlineHtml(d);
       }
     } catch (e) {
       if (resDiv) resDiv.innerHTML = `<span style="color:#EF4444;">❌ 检测异常: ${escapeHtml(e.message)}</span>`;
@@ -732,12 +747,17 @@ function initUIEvents() {
       const code = res.data.code;
       const t = res.data.token;
       const net = res.data.network;
+      const identity = getIdentityMeta(res.data);
+      const cookieText = isIdentityUnavailable(c)
+        ? '<span style="color:#F59E0B; font-weight:700;">⚠️ 暂时无法确认</span>'
+        : (c?.valid ? '<span style="color:#34D399; font-weight:700;">✅ 可用</span>' : '<span style="color:#F87171; font-weight:700;">❌ 不可用或失效</span>');
       resultDiv.innerHTML = `
         <div style="background:var(--card-inner); padding:10px 14px; border-radius:10px; border:1px solid var(--border-color); display:flex; flex-direction:column; gap:8px; margin-top:8px;">
-          <div><strong>1. 必应网页端 Cookie:</strong> ${c?.valid ? '<span style="color:#34D399; font-weight:700;">✅ 可用</span>' : '<span style="color:#F87171; font-weight:700;">❌ 不可用或失效</span>'} <small style="color:var(--text-sub);">(${escapeHtml(c?.message || '')})</small></div>
+          <div><strong>1. 必应网页端 Cookie:</strong> ${cookieText} <small style="color:var(--text-sub);">(${escapeHtml(c?.message || '')})</small></div>
           <div><strong>2. 授权码链接 Code:</strong> ${code?.valid ? '<span style="color:#34D399; font-weight:700;">✅ 可用</span>' : '<span style="color:#F59E0B; font-weight:700;">⚠️ 待配置</span>'} <small style="color:var(--text-sub);">(${escapeHtml(code?.message || '')})</small></div>
           <div><strong>3. 移动端 OAuth Token:</strong> ${t?.valid ? '<span style="color:#34D399; font-weight:700;">✅ 可用</span>' : '<span style="color:#F87171; font-weight:700;">❌ 不可用或失效</span>'} <small style="color:var(--text-sub);">(${escapeHtml(t?.message || '')})</small></div>
-          <div><strong>4. 网络出口与 IP 地区:</strong> ${net?.regionPass ? '<span style="color:#34D399; font-weight:700;">✅ 中国大陆 (安全通过)</span>' : '<span style="color:#F59E0B; font-weight:700;">⚠️ 非大陆出口</span>'} <small style="color:var(--text-sub);">(${escapeHtml(net?.ipInfo || '')})</small></div>
+          <div><strong>4. Cookie 与 OAuth 身份:</strong> <span style="color:${identity.color}; font-weight:700;">${identity.icon} ${identity.text}</span> <small style="color:var(--text-sub);">(${escapeHtml(identity.message || '')})</small></div>
+          <div><strong>5. 网络出口与 IP 地区:</strong> ${net?.regionPass ? '<span style="color:#34D399; font-weight:700;">✅ 中国大陆 (安全通过)</span>' : '<span style="color:#F59E0B; font-weight:700;">⚠️ 非大陆出口</span>'} <small style="color:var(--text-sub);">(${escapeHtml(net?.ipInfo || '')})</small></div>
         </div>
       `;
       fetchStatus();
@@ -1106,7 +1126,7 @@ function openQuickAddAccountModal(accountId = null) {
       cookieInput.value = '';
       cookieInput.placeholder = acc?.hasCookie
         ? '已配置 Cookie（内容已隐藏，留空保持不变，可直接粘贴新 Cookie 覆盖）'
-        : '粘贴该账号 rewards.bing.com 的 Cookie';
+        : '粘贴该账号从 cn.bing.com 抓取的完整 Cookie（必须包含 _U）';
     }
     if (authInput) {
       authInput.value = '';
@@ -1127,7 +1147,7 @@ function openQuickAddAccountModal(accountId = null) {
     if (enabledInput) enabledInput.checked = true;
     if (cookieInput) {
       cookieInput.value = '';
-      cookieInput.placeholder = '粘贴该账号 rewards.bing.com 的 Cookie';
+      cookieInput.placeholder = '粘贴该账号从 cn.bing.com 抓取的完整 Cookie（必须包含 _U）';
     }
     if (authInput) {
       authInput.value = '';
@@ -1450,7 +1470,7 @@ function renderAccountSelectorBar(summary) {
     const auth = getAccountAuthStatus(acc);
     html += `
       <button class="account-chip ${isActive ? 'active' : ''}" data-acc-id="${acc.id}">
-        <span class="chip-icon">${auth.cls === 'badge-auth-valid' ? '🟢' : auth.cls === 'badge-auth-invalid' ? '🔴' : (acc.enabled ? '👤' : '⏸️')}</span>
+        <span class="chip-icon">${auth.icon || (auth.cls === 'badge-auth-valid' ? '🟢' : auth.cls === 'badge-auth-invalid' ? '🔴' : (acc.enabled ? '👤' : '⏸️'))}</span>
         <span class="chip-name">${escapeHtml(acc.name)}</span>
         <span class="chip-sub">${(acc.balance || 0).toLocaleString()} 分</span>
       </button>
@@ -1776,31 +1796,47 @@ function formatDiagnosisTime(ts) {
   }
 }
 
-// 账号凭据体检状态：有效 / 失效 / 未检测（悬停展示上次检测时间与结果）
+// 账号凭据体检状态：有效 / 需修复 / 身份冲突 / 身份待确认 / 失效 / 未检测
 function getAccountAuthStatus(acc) {
   const d = acc?.authDiagnosis;
   if (!d || !d.checkedAt) {
     return {
       text: '未检测',
       cls: 'badge-auth-unknown',
+      icon: '👤',
       tip: '尚未体检该账号\n点击右上角「账号体检」可检测 Cookie 与 Token 是否过期'
     };
   }
-  const cookieLine = d.cookieValid ? '✅ Cookie 有效' : '❌ Cookie 失效';
+
+  const identity = getIdentityMeta(d);
+  const cookieLine = isIdentityUnavailable({ identityMatch: d.identityMatch, valid: d.cookieValid, message: d.cookieMessage })
+    ? '⚠️ Cookie 有效性暂时无法确认'
+    : (d.cookieValid ? '✅ Cookie 有效' : '❌ Cookie 失效');
   const tokenLine = d.tokenValid ? '✅ Token 有效' : '❌ Token 失效';
+  const identityLine = `${identity.icon} Cookie 与 OAuth 身份：${identity.text}`;
   const tip = [
     `上次检测：${formatDiagnosisTime(d.checkedAt)}`,
     `检测结果：${d.overallValid ? (d.warning ? '已登录但存在异常' : '整体有效') : '存在失效项'}`,
     cookieLine,
     tokenLine,
+    identityLine,
+    ...(identity.message ? [identity.message] : []),
     ...(d.warning ? [`⚠️ ${d.warningMessage || 'Cookie 存在异常，请重新抓取'}`] : [])
   ].join('\n');
-  if (d.overallValid && d.warning) {
-    return { text: '需修复', cls: 'badge-auth-warn', tip };
+
+  if (d.identityMatch === 'mismatch') {
+    return { text: '身份冲突', cls: 'badge-auth-invalid', icon: '🔴', tip };
   }
-  return d.overallValid
-    ? { text: '有效', cls: 'badge-auth-valid', tip }
-    : { text: '失效', cls: 'badge-auth-invalid', tip };
+  if (d.identityMatch === 'unknown' && d.overallValid) {
+    return { text: '身份待确认', cls: 'badge-auth-warn', icon: '🟡', tip };
+  }
+  if (!d.overallValid) {
+    return { text: '失效', cls: 'badge-auth-invalid', icon: '🔴', tip };
+  }
+  if (d.warning) {
+    return { text: '需修复', cls: 'badge-auth-warn', icon: '🟡', tip };
+  }
+  return { text: '有效', cls: 'badge-auth-valid', icon: '🟢', tip };
 }
 
 // 下次自动启动时间：今日计划 / 即将启动 / 明日窗口 / 停用等
@@ -2157,6 +2193,40 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// 身份一致性展示：match / mismatch / unknown 三种语义严格区分
+function getIdentityMeta(data) {
+  const raw = data && data.identityMatch;
+  const identityMatch = ['match', 'mismatch', 'unknown'].includes(raw) ? raw : 'unknown';
+  const table = {
+    match: { icon: '✅', color: '#34D399', cls: 'pill-ok', text: '身份一致' },
+    mismatch: { icon: '❌', color: '#F87171', cls: 'pill-err', text: '身份冲突' },
+    unknown: { icon: '⚠️', color: '#F59E0B', cls: 'pill-warn', text: '身份待确认' }
+  };
+  const meta = table[identityMatch];
+  return {
+    identityMatch,
+    icon: meta.icon,
+    color: meta.color,
+    cls: meta.cls,
+    text: meta.text,
+    message: (data && data.identityMessage) || ''
+  };
+}
+
+function identityInlineHtml(data) {
+  const meta = getIdentityMeta(data);
+  const text = meta.message || meta.text;
+  return '<div style="margin-top:5px; color:' + meta.color + ';">' + meta.icon + ' ' + escapeHtml(text) + '</div>';
+}
+
+// 身份接口暂时不可用（HTTP 5xx / 网络异常）时只能显示「待确认」
+function isIdentityUnavailable(data) {
+  if (!data || data.identityMatch !== 'unknown') return false;
+  if (data.valid) return false;
+  const merged = String(data.message || '') + ' ' + String(data.identityMessage || '');
+  return /HTTP\s+5\d\d|暂时不可用|无法确认|请求失败/.test(merged);
+}
+
 async function runTasks() {
   const reqBody = selectedAccountId !== 'all' ? { accountId: selectedAccountId } : {};
   const res = await fetch('/api/tasks/run', {
@@ -2358,7 +2428,7 @@ function loadAccountIntoForm(accId) {
   const hasAuthCode = acc.authCodeUrl === SECRET_PLACEHOLDER || !!acc.hasAuthCodeUrl;
   cookieElem.value = '';
   authCodeElem.value = '';
-  cookieElem.placeholder = hasCookie ? '已配置 Cookie（内容已隐藏，可重新粘贴覆盖）' : '粘贴浏览器 rewards.bing.com 的完整 Cookie';
+  cookieElem.placeholder = hasCookie ? '已配置 Cookie（内容已隐藏，可重新粘贴覆盖）' : '粘贴浏览器 cn.bing.com 的完整 Cookie（必须包含 _U）';
   authCodeElem.placeholder = hasAuthCode ? '已配置授权码（内容已隐藏，可重新粘贴覆盖）' : '粘贴包含 code= 的完整跳转链接';
   cookieElem.type = 'password';
   authCodeElem.type = 'password';
@@ -2705,7 +2775,23 @@ async function runSingleAccountDiagnosis(accountId) {
     const bTitle = document.getElementById('diag-banner-title');
     const bSub = document.getElementById('diag-banner-sub');
 
-    if (data.allValid && net.regionPass) {
+    const identity = getIdentityMeta(data);
+    const identityConflict = data.identityMatch === 'mismatch' || data.sameAccount === false;
+    const identityUnavailable = isIdentityUnavailable(cookie) || (
+      data.identityMatch === 'unknown' && !data.warning && cookie.valid && token.valid && data.overallValid
+    );
+
+    if (identityConflict) {
+      banner.className = 'diag-banner failed';
+      bIcon.innerText = '🔴';
+      bTitle.innerText = `账号 [${escapeHtml(accName)}] Cookie 与 OAuth 身份冲突`;
+      bSub.innerText = data.identityMessage || 'Cookie 所属微软账号与 OAuth Token 不一致，存在串号风险，请重新导出同一账号的凭据。';
+    } else if (identityUnavailable) {
+      banner.className = 'diag-banner partial';
+      bIcon.innerText = '🟡';
+      bTitle.innerText = `账号 [${escapeHtml(accName)}] 身份状态待确认`;
+      bSub.innerText = data.identityMessage || '身份校验接口暂时不可用，暂时无法确认 Cookie 与 OAuth 是否为同一账号，请稍后重试。';
+    } else if (data.allValid && net.regionPass) {
       banner.className = 'diag-banner ok';
       bIcon.innerText = '🟢';
       bTitle.innerText = `账号 [${escapeHtml(accName)}] 登录完全正常 (双端在线)`;
@@ -2737,6 +2823,13 @@ async function runSingleAccountDiagnosis(accountId) {
         <div style="color:#F59E0B;">状态：⚠️ 身份认证有效，但 Cookie 不完整 —— ${escapeHtml(cookie.warningMessage || '缺少 _U 登录标头')}</div>
         <div style="margin-top:4px; font-size:11.5px; color:#94A3B8;">建议：在电脑登录 cn.bing.com 后重新抓取完整 Cookie（必须包含 _U），否则 PC 搜索不会计分。</div>
       `;
+    } else if (isIdentityUnavailable(cookie)) {
+      pillCookie.className = 'diag-status-pill pill-warn';
+      pillCookie.innerText = '暂时无法确认';
+      detailCookie.innerHTML = `
+        <div style="color:#F59E0B;">状态：⚠️ ${escapeHtml(cookie.message || data.identityMessage || '身份校验接口暂时不可用，暂时无法确认 Cookie 有效性')}</div>
+        <div style="margin-top:4px; color:#F59E0B;">${escapeHtml(cookie.identityMessage || data.identityMessage || 'Cookie 与 OAuth 身份暂时无法比对，请稍后重新体检。')}</div>
+      `;
     } else if (cookie.valid) {
       pillCookie.className = 'diag-status-pill pill-ok';
       pillCookie.innerText = '已登录正常';
@@ -2749,7 +2842,7 @@ async function runSingleAccountDiagnosis(accountId) {
       pillCookie.innerText = '未登录 / 失效';
       detailCookie.innerHTML = `
         <div style="color:#F87171;">状态：❌ ${escapeHtml(cookie.message || 'Cookie 缺失或已失效')}</div>
-        <div style="margin-top:4px; font-size:11.5px; color:#94A3B8;">建议：在电脑登录 rewards.bing.com，按 F12 复制完整 Cookie 粘贴到配置中心。</div>
+        <div style="margin-top:4px; font-size:11.5px; color:#94A3B8;">建议：在电脑登录 cn.bing.com，复制完整 Cookie（必须包含 _U；KievRPSSecAuth 不能替代）粘贴到配置中心。</div>
       `;
     }
 
@@ -2867,14 +2960,19 @@ function renderAllAccountDiagnosisResults(results) {
     const cookieOk = !!r.cookie?.valid;
     const tokenOk = !!r.token?.valid;
     const overallOk = !!r.overallValid;
+    const identity = getIdentityMeta(r);
+    const cookieUnavailable = isIdentityUnavailable(r.cookie);
+    const cookieCls = cookieUnavailable ? 'pill-warn' : (cookieOk ? 'pill-ok' : 'pill-err');
+    const cookieText = cookieUnavailable ? '无法确认' : (cookieOk ? '有效' : '失效');
     const err = r.error ? ` · ${escapeHtml(r.error)}` : '';
     const cls = overallOk ? 'pill-ok' : 'pill-err';
     const statusText = overallOk ? (r.allValid ? '整体有效' : '部分有效') : '失效';
     return `
       <div class="diag-all-row">
         <span class="diag-all-name">${name}</span>
-        <span class="diag-status-pill ${cookieOk ? 'pill-ok' : 'pill-err'}">Cookie ${cookieOk ? '有效' : '失效'}</span>
+        <span class="diag-status-pill ${cookieCls}">Cookie ${cookieText}</span>
         <span class="diag-status-pill ${tokenOk ? 'pill-ok' : 'pill-err'}">Token ${tokenOk ? '有效' : '失效'}</span>
+        <span class="diag-status-pill ${identity.cls}">${identity.icon} ${identity.text}</span>
         <span class="diag-status-pill ${cls}">${statusText}</span>
         <span class="diag-all-detail">${r.balance ? r.balance.toLocaleString() + ' 分' : '--'}${err}</span>
       </div>
@@ -2882,7 +2980,6 @@ function renderAllAccountDiagnosisResults(results) {
   }).join('');
 }
 
-// 切换历史记录天数 (7 日 / 30 日)
 function switchHistoryDays(days) {
   currentHistoryDays = days;
   document.getElementById('btn-history-7')?.classList.toggle('active', days === 7);

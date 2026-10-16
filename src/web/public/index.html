@@ -510,8 +510,8 @@
           <h3 class="step-title">第二步：配置必应网页端 Cookie</h3>
           <p class="step-desc">该 Cookie 用于「必应 PC 搜索（60分）」、「每日活动集 Daily Set」与「桌面专享任务」。</p>
           <div class="step-action-box">
-            <p>在电脑浏览器中登录 <a href="https://rewards.bing.com" target="_blank" style="color:#38BDF8;">rewards.bing.com</a>，按 <code>F12</code> 打开控制台，在【网络/Network】或【应用程序/Application】中复制 Cookie 字符串，粘贴在下方：</p>
-            <textarea id="guide-cookie-input" class="form-textarea" rows="4" placeholder="粘贴完整的 Cookie 字符串（必须包含 _U 或 KievRPSSecAuth）"></textarea>
+            <p>在电脑浏览器中登录 <a href="https://cn.bing.com/" target="_blank" style="color:#38BDF8;">cn.bing.com</a>，按 <code>F12</code> 打开控制台，在【网络/Network】或【应用程序/Application】中复制完整 Cookie 字符串，粘贴在下方：</p>
+            <textarea id="guide-cookie-input" class="form-textarea" rows="4" placeholder="粘贴 cn.bing.com 的完整 Cookie 字符串（必须包含 _U）"></textarea>
             <button id="guide-btn-test-cookie" class="btn btn-secondary" style="margin-top: 8px;">测试 Cookie 有效性</button>
             <div id="guide-cookie-result" class="hint-msg"></div>
           </div>
@@ -639,13 +639,13 @@
             <label class="form-label">必应网页端 Cookie (针对当前选中的账号)</label>
             <div class="input-with-btn">
               <div class="secret-field">
-                <input type="password" id="cfg-cookie" class="form-input" autocomplete="off" spellcheck="false" placeholder="粘贴浏览器 rewards.bing.com 的完整 Cookie">
+                <input type="password" id="cfg-cookie" class="form-input" autocomplete="off" spellcheck="false" placeholder="粘贴浏览器 cn.bing.com 的完整 Cookie（必须包含 _U）">
                 <button type="button" class="secret-toggle" data-target="cfg-cookie" title="显示 / 隐藏 Cookie">👁</button>
               </div>
               <button type="button" id="btn-test-modal-cookie" class="btn btn-secondary btn-sm" title="测试该 Cookie 有效性与余额">测试有效性</button>
               <button type="button" id="btn-clear-modal-cookie" class="btn btn-danger-soft btn-sm" title="清空该账号保存的 Cookie">清空</button>
             </div>
-            <small class="form-hint" id="cfg-cookie-hint">PC 搜索、每日活动集与桌面任务必备；内容默认隐藏，不会明文展示</small>
+            <small class="form-hint" id="cfg-cookie-hint">请在 cn.bing.com 抓取，必须包含 _U；KievRPSSecAuth 不能替代。PC 搜索、每日活动集与桌面任务必备</small>
             <div id="cfg-cookie-test-result" style="margin-top: 6px; font-size: 12px;"></div>
           </div>
 
@@ -1024,7 +1024,7 @@
             <label class="form-label" style="margin-bottom: 0;">必应网页端 Cookie (可选)</label>
             <button type="button" class="btn btn-danger-soft btn-sm" id="btn-quick-clear-cookie" style="display: none; padding: 2px 8px; font-size: 11px;">清空已有 Cookie</button>
           </div>
-          <textarea id="quick-add-cookie" class="form-textarea" rows="3" placeholder="粘贴该账号 rewards.bing.com 的 Cookie"></textarea>
+          <textarea id="quick-add-cookie" class="form-textarea" rows="3" placeholder="粘贴该账号 cn.bing.com 的完整 Cookie（必须包含 _U）"></textarea>
           <small class="form-hint" id="quick-add-cookie-hint">编辑账号时留空表示保留原 Cookie。</small>
         </div>
         <div class="form-group">

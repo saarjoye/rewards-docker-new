@@ -603,7 +603,13 @@ class ConfigManager {
       warningMessage: diagnosis.warningMessage || '',
       balance: Number(diagnosis.balance || 0),
       cookieMessage: diagnosis.cookieMessage || '',
-      tokenMessage: diagnosis.tokenMessage || ''
+      tokenMessage: diagnosis.tokenMessage || '',
+      identityMatch: ['match', 'mismatch', 'unknown'].includes(diagnosis.identityMatch)
+        ? diagnosis.identityMatch
+        : 'unknown',
+      sameAccount: diagnosis.sameAccount === true ? true : (diagnosis.sameAccount === false ? false : null),
+      identityMessage: diagnosis.identityMessage || '',
+      matchMethod: diagnosis.matchMethod || 'identity'
     };
     this.save();
     return acc.authDiagnosis;

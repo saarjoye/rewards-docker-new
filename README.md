@@ -241,9 +241,10 @@ npm test
 > ✨ 提示：系统会自动捕获并持久化保存 Refresh Token，后续系统会**永久自动无感续期**，无需再次操作。
 
 ### 步骤 2：网页端 Cookie 配置
-1. 在电脑浏览器登录 [rewards.bing.com](https://rewards.bing.com)；
+1. 在电脑浏览器登录 [cn.bing.com](https://cn.bing.com/)（必须使用与 OAuth Token 相同的微软账号）；
 2. 按 `F12` 打开开发者工具，在【网络 / Network】中抓取任意请求的 `Cookie`，或者直接在【应用程序 / Application -> Cookies】中复制完整 Cookie 文本；
-3. 粘贴至输入框，点击 **「测试 Cookie 有效性」**，确认显示“Cookie 有效”即可。
+3. 完整 Cookie 必须包含 `_U`。`KievRPSSecAuth` 不能替代 `_U`，否则 PC 搜索无法关联计分；
+4. 粘贴至输入框，点击 **「测试 Cookie 有效性」**。系统会验证 Cookie 登录态，并在已配置 OAuth Token 时自动核对两者是否为同一微软账号；身份无法确认时不会误报为一致。
 
 ### 步骤 3：网络与代理（若在境外 VPS 部署必选）
 - 如果你的设备在**中国国内家庭宽带 / NAS**：保持默认直连即可。

@@ -11,6 +11,194 @@ export const AUTH_CONFIG = {
   tokenUrl: 'https://login.live.com/oauth20_token.srf'
 };
 
+const IDENTITY_EVIDENCE = Symbol('msr.identityEvidence');
+const IDENTITY_FIELD_NAMES = new Set([
+  'ruid', 'epuid', 'cimsid', 'userid', 'user_id', 'uid', 'memberid',
+  'profileid', 'puid', 'accountid', 'account_id', '_u'
+]);
+const INVALID_IDENTITY_VALUES = new Set(['', 'null', 'null-null', 'undefined', 'false']);
+
+/**
+ * 统一身份值格式。比较过程只在服务端内存中进行，绝不返回给前端。
+ */
+export function normalizeIdentityValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'object' || typeof value === 'function' || typeof value === 'symbol') return null;
+  if (typeof value === 'number' && !Number.isFinite(value)) return null;
+
+  let text = String(value).trim();
+  if (!text) return null;
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    text = text.slice(1, -1).trim();
+  }
+  try {
+    const decoded = decodeURIComponent(text);
+    if (decoded !== text) text = decoded;
+  } catch {}
+  const normalized = text.trim().toLowerCase();
+  if (INVALID_IDENTITY_VALUES.has(normalized)) return null;
+  return normalized;
+}
+
+function addIdentityValue(fields, key, value) {
+  const normalized = normalizeIdentityValue(value);
+  if (!normalized) return;
+  if (!fields.has(key)) fields.set(key, new Set());
+  fields.get(key).add(normalized);
+}
+
+export function collectIdentityFields(source, target = new Map(), depth = 0, seen = new WeakSet()) {
+  if (source === null || source === undefined || depth > 8) return target;
+
+  if (typeof source === 'string') {
+    const trimmed = source.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return collectIdentityFields(JSON.parse(trimmed), target, depth + 1, seen);
+      } catch {}
+    }
+    return target;
+  }
+  if (typeof source !== 'object') return target;
+  if (seen.has(source)) return target;
+  seen.add(source);
+
+  if (source instanceof Map) {
+    for (const [key, value] of source.entries()) {
+      const normalizedKey = String(key).toLowerCase();
+      if (IDENTITY_FIELD_NAMES.has(normalizedKey)) addIdentityValue(target, normalizedKey, value);
+      if (value && typeof value === 'object') collectIdentityFields(value, target, depth + 1, seen);
+    }
+    return target;
+  }
+
+  for (const [key, value] of Object.entries(source)) {
+    const normalizedKey = String(key).toLowerCase();
+    if (IDENTITY_FIELD_NAMES.has(normalizedKey)) addIdentityValue(target, normalizedKey, value);
+    if (value && typeof value === 'object') collectIdentityFields(value, target, depth + 1, seen);
+  }
+  return target;
+}
+
+export function mergeIdentityFields(...fieldMaps) {
+  const merged = new Map();
+  for (const fieldMap of fieldMaps) {
+    if (!fieldMap || typeof fieldMap.forEach !== 'function') continue;
+    fieldMap.forEach((values, key) => {
+      if (!merged.has(key)) merged.set(key, new Set());
+      const iterable = values instanceof Set ? values : [values];
+      for (const value of iterable) {
+        const normalized = normalizeIdentityValue(value);
+        if (normalized) merged.get(key).add(normalized);
+      }
+    });
+  }
+  return merged;
+}
+
+export function createIdentityEvidence(...sources) {
+  let fields = new Map();
+  for (const source of sources) {
+    if (source instanceof Map) {
+      fields = mergeIdentityFields(fields, source);
+    } else {
+      fields = mergeIdentityFields(fields, collectIdentityFields(source));
+    }
+  }
+  return fields;
+}
+
+export function attachIdentityEvidence(target, evidence) {
+  if (!target || typeof target !== 'object') return target;
+  const value = evidence instanceof Map ? evidence : createIdentityEvidence(evidence);
+  Object.defineProperty(target, IDENTITY_EVIDENCE, {
+    value,
+    enumerable: false,
+    configurable: true,
+    writable: false
+  });
+  return target;
+}
+
+export function getIdentityEvidence(target) {
+  return target && typeof target === 'object' ? target[IDENTITY_EVIDENCE] : undefined;
+}
+
+export function parseCookieValue(cookie, name) {
+  if (!cookie || !name) return null;
+  for (const part of String(cookie).split(';')) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (key !== name) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return null;
+}
+
+export function hasCookie(cookie, name) {
+  const value = parseCookieValue(cookie, name);
+  return value !== null && value !== '';
+}
+
+export function isCookieUserLoggedIn(raw) {
+  let data = raw;
+  if (typeof raw === 'string') {
+    try { data = JSON.parse(raw); } catch { return false; }
+  }
+  if (!data || typeof data !== 'object') return false;
+
+  const userInfo = data.userInfo || data;
+  const profile = userInfo.profile || data.profile || data.response?.profile || {};
+  const attributes = profile.attributes || userInfo.attributes || data.attributes || {};
+  const nonUser = normalizeIdentityValue(attributes.nonuser);
+  if (nonUser === 'true') return false;
+  if (userInfo.isRewardsUser === false) return false;
+
+  return createIdentityEvidence(data).size > 0;
+}
+
+export function compareIdentityEvidence(left, right) {
+  const leftFields = getIdentityEvidence(left);
+  const rightFields = getIdentityEvidence(right);
+  const leftValues = new Set();
+  const rightValues = new Set();
+  if (leftFields?.forEach) leftFields.forEach(values => values.forEach(value => leftValues.add(value)));
+  if (rightFields?.forEach) rightFields.forEach(values => values.forEach(value => rightValues.add(value)));
+
+  if (!leftValues.size || !rightValues.size) {
+    return {
+      identityMatch: 'unknown',
+      sameAccount: null,
+      matchMethod: 'identity',
+      identityMessage: '暂时无法确认 Cookie 与 OAuth 是否为同一微软账号（接口没有返回可比较的身份字段）'
+    };
+  }
+
+  for (const value of leftValues) {
+    if (rightValues.has(value)) {
+      return {
+        identityMatch: 'match',
+        sameAccount: true,
+        matchMethod: 'identity',
+        identityMessage: 'Cookie 与 OAuth Token 属于同一微软账号'
+      };
+    }
+  }
+
+  return {
+    identityMatch: 'mismatch',
+    sameAccount: false,
+    matchMethod: 'identity',
+    identityMessage: 'Cookie 所属微软账号与 OAuth Token 不一致，存在串号风险，请重新导出同一账号的凭据'
+  };
+}
+
 export class AuthManager {
   constructor() {
     this.accessToken = null;
@@ -200,16 +388,92 @@ export class AuthManager {
   }
 
   /**
-   * 验证网页端 Cookie 是否有效并拉取账号详情
+   * 验证网页端 Cookie 是否有效并拉取账号详情。
+   * 登录态只使用 cn.bing.com 的 panelflyout 身份接口验证；
+   * rewards.bing.com/earn 仅用于解析积分、任务和印章等业务数据。
    */
   async checkCookieStatus(cookieOverride = null, accountId = null) {
     const acc = configManager.resolveAccount(accountId);
     const cookie = cookieOverride || acc?.cookie;
     if (!cookie) {
-      return { valid: false, message: '尚未配置网页端 Cookie' };
+      return {
+        valid: false,
+        hasU: false,
+        warning: false,
+        identityMatch: 'unknown',
+        sameAccount: null,
+        matchMethod: 'identity',
+        identityMessage: '尚未配置网页端 Cookie',
+        message: '尚未配置网页端 Cookie'
+      };
     }
 
-    // 优先采用微软最新 Next.js earn 页面进行鉴权检测（解决官方 getuserinfo 接口频报 401 的缺陷）
+    const hasU = hasCookie(cookie, '_U');
+    let identityData;
+    try {
+      const rawIdentity = await networkClient.request({
+        url: 'https://cn.bing.com/rewards/panelflyout/getuserinfo',
+        headers: pcPageHeaders({
+          'referer': 'https://cn.bing.com/',
+          'cookie': cookie
+        })
+      });
+      identityData = typeof rawIdentity === 'string' ? JSON.parse(rawIdentity) : rawIdentity;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      const unavailable = /HTTP\s+5\d\d/.test(msg);
+      const expired = /HTTP\s+(401|403)/.test(msg);
+      return {
+        valid: false,
+        hasU,
+        warning: !hasU,
+        identityMatch: 'unknown',
+        sameAccount: null,
+        matchMethod: 'identity',
+        identityMessage: unavailable
+          ? '身份接口暂时不可用，Cookie 与 OAuth 身份无法确认'
+          : '无法读取 Cookie 登录身份，Cookie 与 OAuth 身份无法确认',
+        message: expired
+          ? '微软身份接口返回 HTTP 401/403，Cookie 已过期，请在 cn.bing.com 重新登录后获取'
+          : `网页端身份接口请求失败: ${msg}`
+      };
+    }
+
+    if (!isCookieUserLoggedIn(identityData)) {
+      return {
+        valid: false,
+        hasU,
+        warning: !hasU,
+        identityMatch: 'unknown',
+        sameAccount: null,
+        matchMethod: 'identity',
+        identityMessage: 'Cookie 未提供有效的已登录微软身份',
+        message: hasU ? 'Cookie 已失效或不是已登录状态，请在 cn.bing.com 重新登录后获取' : 'Cookie 缺少 _U 或已失效，请在 cn.bing.com 重新登录后获取完整 Cookie'
+      };
+    }
+
+    const identityEvidence = createIdentityEvidence(identityData, {
+      _U: parseCookieValue(cookie, '_U')
+    });
+    const uWarning = hasU ? '' : ' | 缺少 _U 登录标头，必应搜索无法关联账号计分！请在电脑登录 cn.bing.com 重新抓取完整 Cookie';
+    const identityStatus = {
+      valid: true,
+      hasU,
+      warning: !hasU,
+      warningMessage: hasU ? '' : '缺少 _U 登录标头：必应搜索无法关联账号计分，请在电脑登录 cn.bing.com 后重新抓取完整 Cookie',
+      identityMatch: 'unknown',
+      sameAccount: null,
+      matchMethod: 'identity',
+      identityMessage: 'Cookie 身份有效，等待与 OAuth Token 比对'
+    };
+
+    let balance = 0;
+    let pcProgress = 0, pcMax = 60;
+    let streakDays = 0;
+    let userName = '';
+    let stampsProgress = 0, stampsMax = 12;
+    let businessMessage = '';
+
     try {
       const earnHtml = await networkClient.request({
         url: 'https://rewards.bing.com/earn',
@@ -218,17 +482,10 @@ export class AuthManager {
           'cookie': cookie
         })
       });
-
       const clean = String(earnHtml).replace(/\\"/g, '"');
       const isAuthValid = clean.includes('pointsCounters') || clean.includes('pointsHistory') || clean.includes('activityCards');
 
       if (isAuthValid) {
-        let balance = 0;
-        let pcProgress = 0, pcMax = 60;
-        let streakDays = 0;
-        let userName = '';
-
-        // 1. 提取 PC 搜索配额
         const pcIdx = clean.indexOf('"pointsCounters":{');
         if (pcIdx !== -1) {
           let start = pcIdx + 17, depth = 0, end = start;
@@ -244,73 +501,47 @@ export class AuthManager {
           } catch {}
         }
 
-        // 2. 提取当前总积分余额
-        const balMatch = clean.match(/"balance":(\d+)/) 
+        const balMatch = clean.match(/"balance":(\d+)/)
           || clean.match(/"availablePoints":(\d+)/)
-          || cookie.match(/rc=(\d+)/) 
+          || cookie.match(/rc=(\d+)/)
           || cookie.match(/rb=(\d+)/);
-        if (balMatch) {
-          balance = parseInt(balMatch[1], 10);
-        }
+        if (balMatch) balance = parseInt(balMatch[1], 10);
 
-        // 3. 提取连续签到打卡天数
         const streakMatch = clean.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').match(/每日连续打卡\s*(\d+)/);
-        if (streakMatch) {
-          streakDays = parseInt(streakMatch[1], 10);
-        }
+        if (streakMatch) streakDays = parseInt(streakMatch[1], 10);
 
-        // 4. 提取用户名
         const nameMatch = cookie.match(/N=([^;]+)/);
         if (nameMatch) {
           try { userName = decodeURIComponent(nameMatch[1]); } catch {}
         }
 
-        // 5. 提取印章进度 (如 8/12)
-        let stampsProgress = 0, stampsMax = 12;
         const stampMatch = clean.match(/"aria-label":"收集的印章"[^}]*?"aria-valuemax":(\d+)[^}]*?"aria-valuenow":(\d+)/)
           || clean.match(/aria-label="收集的印章"[^>]*?aria-valuemax="(\d+)"[^>]*?aria-valuenow="(\d+)"/);
         if (stampMatch) {
           stampsMax = parseInt(stampMatch[1], 10) || 12;
           stampsProgress = parseInt(stampMatch[2], 10) || 8;
         }
-
-        // 6. 检查是否存在必应搜索关键登录标头 _U
-        const hasU = cookie.includes('_U=');
-        const uWarning = hasU ? '' : ' | ⚠️缺少 _U 登录标头，必应搜索无法关联账号计分！请在电脑登录 cn.bing.com 重新抓取完整 Cookie';
-
-        return {
-          valid: true,
-          hasU,
-          warning: !hasU,
-          warningMessage: hasU ? '' : '缺少 _U 登录标头：必应搜索无法关联账号计分，请在电脑登录 cn.bing.com 后重新抓取完整 Cookie',
-          balance,
-          userName: userName || '微软用户',
-          streakDays,
-          stamps: {
-            progress: stampsProgress,
-            max: stampsMax
-          },
-          pcSearch: `${pcProgress}/${pcMax}`,
-          message: `网页端已登录成功！${userName ? `用户: ${userName} | ` : ''}积分: ${balance} | 连续签到: ${streakDays}天 | 印章进度: ${stampsProgress}/${stampsMax} | 搜索配额: ${pcProgress}/${pcMax}${uWarning}`
-        };
+      } else if (clean.includes('login.live.com') || clean.includes('Sign in')) {
+        businessMessage = '业务页面要求重新登录，Cookie 登录态可能已失效';
+      } else {
+        businessMessage = '身份有效，但业务页面暂未返回任务数据';
       }
-
-      // 如果返回了页面但未包含 pointsCounters，检测是否跳转到了微软登录页
-      if (clean.includes('login.live.com') || clean.includes('Sign in')) {
-        return { valid: false, message: 'Cookie 已过期失效，页面提示需要重新登录' };
-      }
-
-      return { valid: false, message: '未能识别微软 Rewards 登录态，请检查是否复制了完整 Cookie' };
     } catch (e) {
-      if (e.message && e.message.includes('401')) {
-        return { valid: false, message: '微软官方返回 HTTP 401（未授权），Cookie 已过期，请在浏览器重新登录后获取' };
-      }
-      return { valid: false, message: `网页端请求失败: ${e.message}` };
+      businessMessage = `身份有效，但业务页面暂时不可用: ${e.message}`;
     }
+
+    identityStatus.balance = balance;
+    identityStatus.userName = userName || '微软用户';
+    identityStatus.streakDays = streakDays;
+    identityStatus.stamps = { progress: stampsProgress, max: stampsMax };
+    identityStatus.pcSearch = `${pcProgress}/${pcMax}`;
+    identityStatus.message = `网页端身份已登录！${userName ? `用户: ${userName} | ` : ''}积分: ${balance} | 连续签到: ${streakDays}天 | 印章进度: ${stampsProgress}/${stampsMax} | 搜索配额: ${pcProgress}/${pcMax}${uWarning}${businessMessage ? ` | ${businessMessage}` : ''}`;
+    return attachIdentityEvidence(identityStatus, identityEvidence);
   }
 
   /**
-   * 实测移动端 OAuth Token 与 DAPI 接口连通性
+   * 实测移动端 OAuth Token 与 DAPI 接口连通性。
+   * DAPI 响应中的身份字段只以不可枚举 Symbol 挂在返回对象上，序列化时不会泄露。
    */
   async checkTokenStatus(accountId = null) {
     const acc = configManager.resolveAccount(accountId);
@@ -339,26 +570,28 @@ export class AuthManager {
       });
 
       const data = typeof res === 'string' ? JSON.parse(res) : res;
+      const tokenIdentity = createIdentityEvidence(data?.response || {});
       if (data?.response) {
         const balance = Number(data.response.balance || 0);
         const promos = data.response.promotions || [];
         const readTask = promos.find(x => x.attributes?.offerid === 'ENUS_readarticle3_30points');
         const readProg = readTask ? `${readTask.attributes.progress || 0}/${readTask.attributes.max || 30}` : '就绪';
-        return {
+        return attachIdentityEvidence({
           valid: true,
           balance,
           readProgress: readProg,
           message: `移动端已登录 | 积分: ${balance} | 阅读进度: ${readProg}`
-        };
+        }, tokenIdentity);
       }
-      return { valid: true, message: '移动端 Token 有效' };
+      return attachIdentityEvidence({ valid: true, message: '移动端 Token 有效' }, tokenIdentity);
     } catch (e) {
       return { valid: false, message: `移动端 DAPI 接口验证失败: ${e.message}` };
     }
   }
 
   /**
-   * 一键全面诊断测试账户在 Docker 中的登录状态
+   * 一键全面诊断测试账户在 Docker 中的登录状态。
+   * Cookie 有效但无法确认身份时为 unknown；只有明确身份冲突才判为 mismatch。
    */
   async testAccount(accountId = null) {
     const acc = configManager.resolveAccount(accountId);
@@ -372,6 +605,10 @@ export class AuthManager {
       this.checkTokenStatus(accountId)
     ]);
 
+    const identity = compareIdentityEvidence(cookieStatus, tokenStatus);
+    Object.assign(cookieStatus, identity);
+    Object.assign(tokenStatus, identity);
+
     const hasCode = !!acc?.authCodeUrl;
     const codeStatus = {
       valid: hasCode || tokenStatus.valid,
@@ -379,12 +616,17 @@ export class AuthManager {
     };
 
     const balance = cookieStatus.balance || tokenStatus.balance || 0;
-    // 缺少 _U 时虽然「已登录」，但 PC 搜索不会计分，不能算完全正常
     const cookieUsable = cookieStatus.valid && !cookieStatus.warning;
-    const allValid = cookieUsable && tokenStatus.valid;
+    const identityConflict = identity.identityMatch === 'mismatch';
+    const allValid = cookieUsable && tokenStatus.valid && !identityConflict;
     const partialValid = cookieStatus.valid || tokenStatus.valid;
+    const warning = !!cookieStatus.warning || identityConflict;
+    const warningMessage = [cookieStatus.warningMessage, identityConflict ? identity.identityMessage : '']
+      .filter(Boolean).join('；');
 
-    if (allValid) {
+    if (identityConflict) {
+      logger.log('🔴', `账号 [${name}] Cookie 与 OAuth Token 身份不一致，已阻止判定为完全有效`);
+    } else if (allValid) {
       logger.log('🟢', `账号 [${name}] 登录检测完全通过！网页端与移动端均在线，当前总积分: ${balance}`);
     } else if (cookieStatus.valid && cookieStatus.warning) {
       logger.log('🟡', `账号 [${name}] 网页端 Cookie 异常：${cookieStatus.warningMessage}`);
@@ -405,8 +647,9 @@ export class AuthManager {
       balance,
       allValid,
       overallValid: partialValid,
-      warning: !!cookieStatus.warning,
-      warningMessage: cookieStatus.warningMessage || ''
+      warning,
+      warningMessage,
+      ...identity
     };
   }
 }

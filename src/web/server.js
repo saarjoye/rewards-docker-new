@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import configManager from '../config.js';
 import logger from '../logger.js';
 import taskManager from '../core/taskManager.js';
-import authManager from '../core/auth.js';
+import authManager, { compareIdentityEvidence } from '../core/auth.js';
 import notifier from '../core/notifier.js';
 import scheduler from '../scheduler.js';
 import rewardsApi from '../core/api.js';
@@ -829,7 +829,7 @@ export function createServer() {
     }
   });
 
-  // 7.5 单独测试并保存 Cookie
+  // 7.5 单独测试 Cookie；若当前账号已有 OAuth Token，同时核对两者身份是否一致
   app.post('/api/auth/test-cookie', async (req, res) => {
     const { cookie, accountId } = req.body;
     if (!cookie) {
@@ -840,6 +840,16 @@ export function createServer() {
       // 凭空创建出一个名为「账号 (xxx)」的账号。真正的保存由向导最后一步统一提交。
       const status = await authManager.checkCookieStatus(cookie, accountId);
       const existing = configManager.findAccount(accountId);
+      if (existing && (existing.refreshToken || existing.accessToken)) {
+        const tokenStatus = await authManager.checkTokenStatus(existing.id);
+        Object.assign(status, compareIdentityEvidence(status, tokenStatus));
+        if (tokenStatus.valid && !status.message.includes(tokenStatus.message)) {
+          status.message += ` | OAuth: ${tokenStatus.message}`;
+        }
+      } else if (status.valid) {
+        status.identityMessage = '当前账号尚未配置 OAuth Token，暂时无法比对身份';
+      }
+
       if (status.valid && existing) {
         const accStats = taskManager.ensureAccountStats(existing.id);
         if (status.balance > 0) accStats.balance = status.balance;
@@ -877,7 +887,11 @@ export function createServer() {
       warningMessage: result.warningMessage,
       balance: result.balance,
       cookieMessage: result.cookie?.message,
-      tokenMessage: result.token?.message
+      tokenMessage: result.token?.message,
+      identityMatch: result.identityMatch || result.cookie?.identityMatch || 'unknown',
+      sameAccount: result.sameAccount ?? result.cookie?.sameAccount ?? null,
+      identityMessage: result.identityMessage || result.cookie?.identityMessage || '',
+      matchMethod: result.matchMethod || result.cookie?.matchMethod || 'identity'
     });
     result.diagnosis = diagnosis;
 
@@ -917,10 +931,14 @@ export function createServer() {
           results.push({
             accountId: acc.id,
             accountName: acc.name || acc.id,
-            cookie: { valid: false, message: e.message },
-            token: { valid: false, message: e.message },
+            cookie: { valid: false, message: e.message, identityMatch: 'unknown' },
+            token: { valid: false, message: e.message, identityMatch: 'unknown' },
             overallValid: false,
             allValid: false,
+            identityMatch: 'unknown',
+            sameAccount: null,
+            identityMessage: '体检请求异常，暂时无法确认 Cookie 与 OAuth 是否为同一账号',
+            matchMethod: 'identity',
             balance: 0,
             error: e.message
           });
