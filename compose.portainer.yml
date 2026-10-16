@@ -1,0 +1,26 @@
+﻿# Portainer Git Stack 专用部署文件
+# 用途：从 fork 仓库源码构建，并使用独立卷持久化 Microsoft Rewards 数据
+services:
+  microsoft-rewards:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: microsoft-rewards-fork:main
+    container_name: ms-rewards
+    restart: unless-stopped
+    ports:
+      - "5308:5308"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "5308"
+    volumes:
+      - microsoft-rewards-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  microsoft-rewards-data:
+    name: microsoft-rewards-data
