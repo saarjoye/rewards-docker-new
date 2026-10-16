@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM public.ecr.aws/docker/library/node:20-bookworm-slim
 
 # 安装 tzdata、chromium 与中文字体支持
 RUN apt-get update && apt-get install -y --no-install-recommends \

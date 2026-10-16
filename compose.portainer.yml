@@ -1,10 +1,9 @@
-﻿# Portainer Git Stack 专用部署文件
-# 用途：从 fork 仓库源码构建，并使用独立卷持久化 Microsoft Rewards 数据
+# Portainer Stack 部署文件
+# 先在 LXC 上构建 fork 镜像：
+#   docker build -t microsoft-rewards-fork:main .
+# 再在 Portainer 中以 Compose 内容方式创建 Stack；本文件不触发远程拉取基础镜像。
 services:
   microsoft-rewards:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: microsoft-rewards-fork:main
     container_name: ms-rewards
     restart: unless-stopped
