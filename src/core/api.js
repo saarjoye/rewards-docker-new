@@ -1073,6 +1073,59 @@ export class RewardsApi {
    * 诊断：抓取 /earn 页面，返回「今日积分」附近的所有原文片段。
    * 仅用于排查口径问题，不参与业务判定。
    */
+  /**
+   * 拉取官方 JSON 接口 /api/getuserinfo，返回原始 dashboard 数据。
+   * 这是结构化数据，不依赖 HTML 结构，是 /earn 空壳页时的权威来源。
+   */
+  async fetchUserInfoDashboard() {
+    const raw = await networkClient.request({
+      url: `https://rewards.bing.com/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest&_=${Date.now()}`,
+      headers: {
+        ...pcXhrHeaders(),
+        referer: 'https://rewards.bing.com/',
+        'x-requested-with': 'XMLHttpRequest'
+      }
+    });
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return data;
+  }
+
+  /**
+   * 汇总一个 JSON 对象：顶层键、嵌套键、所有数值叶子路径。
+   * 只用于诊断，不参与业务判定。
+   */
+  summarizeJson(data, maxLeaves = 200) {
+    const numericLeaves = [];
+    const keyPaths = [];
+    const walk = (node, path, depth) => {
+      if (depth > 6 || node === null || node === undefined) return;
+      if (Array.isArray(node)) {
+        if (node.length > 0 && typeof node[0] !== 'object') {
+          numericLeaves.push({ path, value: JSON.stringify(node).slice(0, 200) });
+        }
+        node.slice(0, 5).forEach((item, index) => walk(item, `${path}[${index}]`, depth + 1));
+        return;
+      }
+      if (typeof node !== 'object') {
+        if (typeof node === 'number' || (typeof node === 'string' && /^\d+$/.test(node))) {
+          if (numericLeaves.length < maxLeaves) numericLeaves.push({ path, value: Number(node) });
+        }
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        const childPath = path ? `${path}.${key}` : key;
+        if (keyPaths.length < maxLeaves) keyPaths.push(childPath);
+        walk(value, childPath, depth + 1);
+      }
+    };
+    walk(data, '', 0);
+    return {
+      topLevelKeys: data && typeof data === 'object' ? Object.keys(data) : [],
+      keyPaths,
+      numericLeaves
+    };
+  }
+
   async diagnoseTodayPoints() {
     const html = await networkClient.request({
       url: 'https://rewards.bing.com/earn',
@@ -1096,6 +1149,15 @@ export class RewardsApi {
       cardFieldPresence[key] = idx !== -1;
     }
     const activityStatus = await this.getActivityCardStatus().catch(() => null);
+    // 结构化接口：/earn 是空壳时的权威数据源
+    let userInfoSummary = null;
+    let userInfoError = null;
+    try {
+      const userInfo = await this.fetchUserInfoDashboard();
+      userInfoSummary = this.summarizeJson(userInfo);
+    } catch (e) {
+      userInfoError = e.message;
+    }
     return {
       found: snippets.length > 0,
       count: snippets.length,
@@ -1105,7 +1167,9 @@ export class RewardsApi {
       claimablePoints: info?.claimablePoints ?? null,
       cardFieldPresence,
       activityStatus,
-      htmlLength: String(html).length
+      htmlLength: String(html).length,
+      userInfoSummary,
+      userInfoError
     };
   }
 
