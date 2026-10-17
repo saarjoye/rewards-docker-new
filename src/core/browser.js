@@ -1200,15 +1200,19 @@ class BrowserManager extends EventEmitter {
       await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForTimeout(4000);
 
-      // 先从页面读取「可领取 N」
+      const claimCard = page.locator('button').filter({ hasText: /可领取/ }).first();
+      await claimCard.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+
+      // 从「可领取」卡片读取当前待领积分，卡片本身是按钮。
       let pts = 0;
       try {
         const text = await page.evaluate(() => {
+          const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
           const nodes = [...document.querySelectorAll('p')];
-          const label = nodes.find(n => (n.textContent || '').trim() === '可领取');
+          const label = nodes.find(n => norm(n.textContent) === '可领取');
           if (!label) return '';
           let box = label;
-          for (let i = 0; i < 5 && box; i++) {
+          for (let i = 0; i < 6 && box; i++) {
             const head = box.querySelector && box.querySelector('p.text-pageHeader');
             if (head) return head.textContent || '';
             box = box.parentElement;
@@ -1225,71 +1229,103 @@ class BrowserManager extends EventEmitter {
         return 0;
       }
 
-      // 依次尝试多种可点击入口
-      const candidates = [
-        page.getByRole('button', { name: /领取|可领取/ }).first(),
-        page.locator('button').filter({ hasText: /领取|可领取/ }).first(),
-        page.locator('a').filter({ hasText: /领取|可领取/ }).first(),
-        page.locator('[role="button"]').filter({ hasText: /领取|可领取/ }).first()
-      ];
-
-      let clicked = false;
-      for (const locator of candidates) {
+      const readLabeledNumber = async (labelText) => {
         try {
-          if ((await locator.count()) > 0 && await locator.isVisible().catch(() => false)) {
-            await locator.click({ timeout: 8000 });
-            clicked = true;
-            logger.log('🎁', `已点击领取入口`, '', accName);
-            break;
+          const text = await page.evaluate((label) => {
+            const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+            const node = [...document.querySelectorAll('p')].find(n => norm(n.textContent) === label);
+            if (!node) return null;
+            let box = node;
+            for (let i = 0; i < 6 && box; i++) {
+              const head = box.querySelector && box.querySelector('p.text-pageHeader');
+              if (head) return head.textContent || null;
+              box = box.parentElement;
+            }
+            return null;
+          }, labelText);
+          const m = String(text || '').match(/(\d[\d,]*)/);
+          return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+        } catch {
+          return null;
+        }
+      };
+      const balanceBefore = await readLabeledNumber('可用积分');
+
+      // PointsClaimSidePanel 不是 role=dialog，而是 React 懒加载的固定侧栏。
+      // 面板按钮没有稳定 class，因此按真实可见文本和位置定位。
+      const findConfirmPoint = async () => page.evaluate(() => {
+        const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+        // 侧栏中的可点击容器是 <button>，其 innerText 是
+        // "3 待领取 领取积分"（不是纯文本）。不要只匹配纯文本按钮。
+        const candidates = [...document.querySelectorAll('button, [role="button"]')]
+          .filter(el => {
+            const text = norm(el.innerText);
+            if (!/领取积分/.test(text) || text.length > 80) return false;
+            if (/权益说明/.test(text) || /关闭/.test(text)) return false;
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            return rect.width >= 150 && rect.height >= 60 &&
+              rect.bottom > 0 && rect.top < innerHeight &&
+              rect.right > 0 && rect.left < innerWidth &&
+              style.visibility !== 'hidden' && style.display !== 'none';
+          })
+          .map(el => {
+            const rect = el.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, area: rect.width * rect.height };
+          })
+          .sort((a, b) => b.area - a.area);
+        return candidates[0] || null;
+      });
+
+      // 用户确认的真实交互（截图）：1) 点击「可领取」卡片打开右侧面板；
+      // 2) 再点击面板里的黑色「领取积分」按钮一次。
+      //
+      // 实测经验：卡片必须停在当前视口内才能可靠触发 React onPress。
+      let confirmPoint = null;
+      for (let openAttempt = 0; openAttempt < 3 && !confirmPoint; openAttempt++) {
+        try {
+          if ((await claimCard.count()) > 0) {
+            await claimCard.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+            await page.waitForTimeout(200);
+            await claimCard.click({ timeout: 8000, force: openAttempt > 0 });
+            logger.log('🎁', openAttempt === 0 ? '已点击「可领取」卡片' : '再次点击「可领取」卡片以打开面板', '', accName);
           }
         } catch {}
-      }
-      if (!clicked) {
-        logger.log('🟡', `未找到可点击的领取入口（页面显示 ${pts} 分待领）`, '', accName);
+
+        for (let attempt = 0; attempt < 20 && !confirmPoint; attempt++) {
+          confirmPoint = await findConfirmPoint();
+          if (!confirmPoint) await page.waitForTimeout(500);
+        }
       }
 
-      // 处理确认弹窗：只点一次，之后只等待页面刷新。
-      // 旧实现循环 5 轮、每轮都点一次并打印「领取成功」，导致重复领取与日志刷屏。
-      await page.waitForTimeout(2500);
-      const confirmCandidates = [
-        page.locator('div[role="dialog"] button').last(),
-        page.getByRole('button', { name: /领取积分|确认领取|确认/ }).last(),
-        page.locator('button').filter({ hasText: /领取积分|确认/ }).last()
-      ];
       let confirmClicked = false;
-      for (const locator of confirmCandidates) {
+      if (confirmPoint) {
         try {
-          if ((await locator.count()) > 0 && await locator.isVisible().catch(() => false)) {
-            await locator.click({ timeout: 6000 });
-            confirmClicked = true;
-            logger.log('✅', `已点击确认领取`, '', accName);
-            break;
-          }
-        } catch {}
+          await page.mouse.click(confirmPoint.x, confirmPoint.y);
+          confirmClicked = true;
+          logger.log('✅', '已点击「领取积分」面板按钮', '', accName);
+        } catch (e) {
+          logger.log('🟡', '点击「领取积分」面板按钮失败: ' + e.message, '', accName);
+        }
       }
       if (!confirmClicked) {
-        logger.log('🟡', '未出现确认弹窗（可能已直接领取）', '', accName);
+        logger.log('🟡', '未找到「领取积分」面板按钮（可能已直接领取或页面尚未渲染）', '', accName);
       }
 
-      // 唯一的成功判据：页面上的「可领取」归零
-      await page.waitForTimeout(4000);
+      // 成功判据：页面「可领取」归零，或余额增加与待领取金额一致。
+      // 侧栏关闭本身不能作为成功证据。
       let remaining = null;
-      try {
-        const text = await page.evaluate(() => {
-          const nodes = [...document.querySelectorAll('p')];
-          const label = nodes.find(n => (n.textContent || '').trim() === '可领取');
-          if (!label) return null;
-          let box = label;
-          for (let i = 0; i < 5 && box; i++) {
-            const head = box.querySelector && box.querySelector('p.text-pageHeader');
-            if (head) return head.textContent || null;
-            box = box.parentElement;
-          }
-          return null;
-        });
-        const m = String(text || '').match(/(\d[\d,]*)/);
-        if (m) remaining = parseInt(m[1].replace(/,/g, ''), 10);
-      } catch {}
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await page.waitForTimeout(2500);
+        remaining = await readLabeledNumber('可领取');
+        if (remaining === 0) break;
+        const balanceAfter = await readLabeledNumber('可用积分');
+        if (remaining !== null && balanceBefore !== null && balanceAfter !== null && balanceAfter >= balanceBefore + pts) {
+          remaining = 0;
+          logger.log('✅', '余额增加，确认领取到账', '', accName);
+          break;
+        }
+      }
 
       if (remaining === 0) {
         claimed = pts;
@@ -1297,7 +1333,7 @@ class BrowserManager extends EventEmitter {
       } else if (remaining !== null) {
         logger.log('🟡', `领取后仍显示 ${remaining} 分待领，未计入`, '', accName);
       } else {
-        logger.log('🟡', `未能读取领取后的状态，按未领取处理`, '', accName);
+        logger.log('🟡', '未能读取领取后的状态，按未领取处理', '', accName);
       }
 
       await this.commitBrowserSession();

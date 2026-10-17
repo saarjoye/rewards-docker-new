@@ -554,8 +554,13 @@ export class RewardsApi {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         // 串行抓取：共享浏览器下并发导航会互相干扰
-        const html = await this.fetchEarnHtmlPreferBrowser().then(r => r.html).catch(() => '');
-        const dashHtml = await this.fetchDashboardHtmlPreferBrowser().then(r => r.html).catch(() => '');
+        const earnRes = await this.fetchEarnHtmlPreferBrowser().catch((e) => ({ html: '', source: 'failed', error: e.message }));
+        const dashRes = await this.fetchDashboardHtmlPreferBrowser().catch((e) => ({ html: '', source: 'failed', error: e.message }));
+        const html = earnRes.html || '';
+        const dashHtml = dashRes.html || '';
+        if (earnRes.source !== 'browser') {
+          logger.log('🟡', `本次今日积分数据来源: ${earnRes.source}${earnRes.error ? '（' + earnRes.error + '）' : ''}`, '', this.currentAccountId);
+        }
         const [flyoutRaw] = await Promise.all([
           networkClient.request({
             url: `https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards&_=${Date.now()}`,

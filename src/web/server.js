@@ -32,7 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.8.9';
+const CURRENT_VERSION = '1.9.0';
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
@@ -711,6 +711,9 @@ export function createServer() {
     const data = taskManager.getStatus(accountId);
     // 附带各账号的下次计划启动时间，供卡片展示
     data.schedule = scheduler.getNextRunInfo();
+    // 账号上下文与浏览器资源是两把独立的锁；前端据此展示当前真实占用者，
+    // 避免只凭 taskManager.running 把同步/体检/领取误显示成“空闲”。
+    data.locks = taskManager.getRuntimeLocks(accountId);
     res.json({
       success: true,
       data
@@ -842,8 +845,24 @@ export function createServer() {
   app.post('/api/tasks/single-search', async (req, res) => {
     try {
       const accountId = req.body?.accountId || null;
-      const result = await taskManager.runSingleTestSearch(accountId);
-      res.json({ success: true, data: result });
+      const acc = configManager.resolveAccount(accountId);
+      if (!acc) return res.status(404).json({ success: false, message: '账号未找到' });
+      // 测搜全程持有账号上下文锁，前端运行横幅才能看到真实占用者，
+      // 也避免测搜期间任务或同步抢走全局账号上下文。
+      if (!accountContextLock.tryAcquire('web-action')) {
+        const snap = accountContextLock.snapshot();
+        return res.status(409).json({
+          success: false,
+          message: `账号上下文正被 [${snap.owner}] 占用，请稍后再试`
+        });
+      }
+      try {
+        rewardsApi.setCurrentAccount(acc);
+        const result = await taskManager.runSingleTestSearch(accountId, { owned: true });
+        res.json({ success: true, data: result });
+      } finally {
+        accountContextLock.release('web-action');
+      }
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }
@@ -1023,44 +1042,54 @@ export function createServer() {
   });
 
   // 8. 全面测试账户状态并在 Docker 中完成体检（结果落盘，供账号卡片展示）
-  async function runAccountDiagnosis(accountId) {
+  async function runAccountDiagnosis(accountId, options = {}) {
     const targetAccountId = accountId || null;
-    const result = await authManager.testAccount(targetAccountId);
-    // 获取当前网络出口信息
-    const [ipInfo, regionPass] = await Promise.all([
-      rewardsApi.getIPInfo(),
-      rewardsApi.checkRegion(0)
-    ]);
-
-    result.network = {
-      region: rewardsApi.region,
-      regionPass,
-      ipInfo: ipInfo || '未知'
-    };
-
-    const diagnosis = configManager.recordAuthDiagnosis(result.accountId, {
-      cookieValid: result.cookie?.valid,
-      tokenValid: result.token?.valid,
-      overallValid: result.overallValid,
-      warning: result.warning,
-      warningMessage: result.warningMessage,
-      balance: result.balance,
-      cookieMessage: result.cookie?.message,
-      tokenMessage: result.token?.message,
-      identityMatch: result.identityMatch || result.cookie?.identityMatch || 'unknown',
-      sameAccount: result.sameAccount ?? result.cookie?.sameAccount ?? null,
-      identityMessage: result.identityMessage || result.cookie?.identityMessage || '',
-      matchMethod: result.matchMethod || result.cookie?.matchMethod || 'identity'
-    });
-    result.diagnosis = diagnosis;
-
-    // 如果成功获取到积分，同步更新当前账户的总积分
-    if (result.balance > 0) {
-      const accStats = taskManager.ensureAccountStats(result.accountId || 'acc_1');
-      accStats.balance = result.balance;
-      taskManager.saveStats();
+    // 体检切账号上下文与余额写回必须整段互斥，避免并发体检串号。
+    const owned = !!options.owned;
+    if (!owned && !accountContextLock.tryAcquire('web-action')) {
+      const snap = accountContextLock.snapshot();
+      throw new Error(`账号上下文正被 [${snap.owner}] 占用，请稍后再体检`);
     }
-    return result;
+    try {
+      const result = await authManager.testAccount(targetAccountId);
+      // 获取当前网络出口信息
+      const [ipInfo, regionPass] = await Promise.all([
+        rewardsApi.getIPInfo(),
+        rewardsApi.checkRegion(0)
+      ]);
+
+      result.network = {
+        region: rewardsApi.region,
+        regionPass,
+        ipInfo: ipInfo || '未知'
+      };
+
+      const diagnosis = configManager.recordAuthDiagnosis(result.accountId, {
+        cookieValid: result.cookie?.valid,
+        tokenValid: result.token?.valid,
+        overallValid: result.overallValid,
+        warning: result.warning,
+        warningMessage: result.warningMessage,
+        balance: result.balance,
+        cookieMessage: result.cookie?.message,
+        tokenMessage: result.token?.message,
+        identityMatch: result.identityMatch || result.cookie?.identityMatch || 'unknown',
+        sameAccount: result.sameAccount ?? result.cookie?.sameAccount ?? null,
+        identityMessage: result.identityMessage || result.cookie?.identityMessage || '',
+        matchMethod: result.matchMethod || result.cookie?.matchMethod || 'identity'
+      });
+      result.diagnosis = diagnosis;
+
+      if (!result.balance) result.balance = 0;
+      if (result.balance > 0) {
+        const accStats = taskManager.ensureAccountStats(result.accountId || 'acc_1');
+        accStats.balance = result.balance;
+        taskManager.saveStats();
+      }
+      return result;
+    } finally {
+      if (!owned) accountContextLock.release('web-action');
+    }
   }
 
   app.post('/api/auth/test', async (req, res) => {
@@ -1081,37 +1110,46 @@ export function createServer() {
       return res.status(409).json({ success: false, message: '任务正在执行中，请稍后再体检（避免账号上下文串台）' });
     }
     try {
-      const accounts = configManager.getAccounts();
-      const results = [];
-      for (const acc of accounts) {
-        try {
-          results.push(await runAccountDiagnosis(acc.id));
-        } catch (e) {
-          results.push({
-            accountId: acc.id,
-            accountName: acc.name || acc.id,
-            cookie: { valid: false, message: e.message, identityMatch: 'unknown' },
-            token: { valid: false, message: e.message, identityMatch: 'unknown' },
-            overallValid: false,
-            allValid: false,
-            identityMatch: 'unknown',
-            sameAccount: null,
-            identityMessage: '体检请求异常，暂时无法确认 Cookie 与 OAuth 是否为同一账号',
-            matchMethod: 'identity',
-            balance: 0,
-            error: e.message
-          });
-        }
+      // 一次全量体检只占用一次上下文锁，内部逐账号串行执行。
+      if (!accountContextLock.tryAcquire('web-action')) {
+        const snap = accountContextLock.snapshot();
+        return res.status(409).json({ success: false, message: '账号上下文正被 [' + snap.owner + '] 占用，请稍后再体检' });
       }
-      const validCount = results.filter(r => r.allValid).length;
-      res.json({
-        success: true,
-        data: {
-          results,
-          total: results.length,
-          validCount
+      try {
+        const accounts = configManager.getAccounts();
+        const results = [];
+        for (const acc of accounts) {
+          try {
+            results.push(await runAccountDiagnosis(acc.id, { owned: true }));
+          } catch (e) {
+            results.push({
+              accountId: acc.id,
+              accountName: acc.name || acc.id,
+              cookie: { valid: false, message: e.message, identityMatch: 'unknown' },
+              token: { valid: false, message: e.message, identityMatch: 'unknown' },
+              overallValid: false,
+              allValid: false,
+              identityMatch: 'unknown',
+              sameAccount: null,
+              identityMessage: '体检请求异常，暂时无法确认 Cookie 与 OAuth 是否为同一账号',
+              matchMethod: 'identity',
+              balance: 0,
+              error: e.message
+            });
+          }
         }
-      });
+        const validCount = results.filter(r => r.allValid).length;
+        res.json({
+          success: true,
+          data: {
+            results,
+            total: results.length,
+            validCount
+          }
+        });
+      } finally {
+        accountContextLock.release('web-action');
+      }
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }

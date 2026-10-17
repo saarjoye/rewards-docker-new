@@ -1343,7 +1343,7 @@ async function fetchSystemMetrics() {
 
 let taskRunning = false;
 // 本地二开版本：仅用于展示，不再监控上游仓库更新。
-let localVersion = '1.7.0';
+let localVersion = '1.9.0';
 let localRevision = '';
 let localBuildTime = '';
 
@@ -1476,16 +1476,83 @@ function renderAccountSelectorBar(summary) {
   });
 }
 
+function describeRunOwner(owner) {
+  const value = String(owner || '');
+  if (value === 'task-run') return { icon: '▶️', title: '自动化任务正在执行中', detail: '正在逐个处理账号任务' };
+  if (value === 'web-sync') return { icon: '🔄', title: '官网进度同步中', detail: '正在从微软官网读取真实进度' };
+  if (value === 'web-action') return { icon: '🔍', title: '单次测搜执行中', detail: '正在执行一次拟人搜索验证' };
+  if (value === 'claim-points') return { icon: '🎁', title: '额外积分领取中', detail: '正在打开 Dashboard 并领取待领积分' };
+  if (value === 'rewards-browser') return { icon: '🌐', title: '浏览器任务执行中', detail: '共享 Chromium 正在处理积分任务' };
+  if (value.startsWith('earn-page:')) return { icon: '🌐', title: '官网页面抓取中', detail: '正在等待页面渲染并读取真实数据' };
+  if (value.startsWith('epic-verify:')) return { icon: '🎮', title: 'Epic 会话校验中', detail: '正在校验 Epic 登录态' };
+  if (value.startsWith('epic-claim:')) return { icon: '🎮', title: 'Epic 游戏领取中', detail: '正在领取免费游戏' };
+  return { icon: '⏳', title: '后台操作正在执行中', detail: value ? '资源持有者：' + value : '正在处理请求' };
+}
+
+function formatRunHeldTime(ms) {
+  const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  if (total < 60) return total + ' 秒';
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes < 60) return minutes + ' 分 ' + seconds + ' 秒';
+  const hours = Math.floor(minutes / 60);
+  return hours + ' 小时 ' + (minutes % 60) + ' 分';
+}
+
+// 全局运行横幅：任务/同步/体检/领取等只要占用账号上下文或浏览器资源，都在同一处展示。
+function renderGlobalRunBanner(data = {}) {
+  const banner = document.getElementById('global-run-banner');
+  if (!banner) return;
+
+  const accountLock = data.locks?.accountContext || {};
+  const browserLock = data.locks?.browserSlot || {};
+  const accountOwner = accountLock.owner || (data.running ? 'task-run' : '');
+  const browserOwner = browserLock.owner || '';
+  const primaryOwner = accountOwner || browserOwner;
+
+  if (!primaryOwner) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  const meta = describeRunOwner(primaryOwner);
+  const iconEl = document.getElementById('global-run-icon');
+  const titleEl = document.getElementById('global-run-title');
+  const detailEl = document.getElementById('global-run-detail');
+  const sinceEl = document.getElementById('global-run-since');
+
+  const accountId = data.runningAccountId || accountLock.accountId || data.selectedAccountId || '';
+  const account = (data.summary?.accountsList || []).find(a => a.id === accountId);
+  let detail = meta.detail;
+  if (account?.name) {
+    detail += ' · 当前账号：' + account.name;
+  } else if (data.running && !accountId) {
+    detail += ' · 全部账号汇总';
+  }
+  if (!accountOwner && browserOwner) {
+    const browserMeta = describeRunOwner(browserOwner);
+    detail = browserMeta.detail;
+  }
+
+  const heldMs = accountOwner ? accountLock.heldMs : browserLock.heldMs;
+  if (iconEl) iconEl.innerText = meta.icon;
+  if (titleEl) titleEl.innerText = meta.title;
+  if (detailEl) detailEl.innerText = detail;
+  if (sinceEl) sinceEl.innerText = heldMs > 0 ? '已持续 ' + formatRunHeldTime(heldMs) : '';
+  banner.style.display = 'block';
+}
+
 // 渲染大屏
 function renderDashboard(data) {
   const { running, runningAccountId, summary, stats, timeline } = data;
 
-  // 1. 渲染顶部多账号切换胶囊
+  // 1. 全局运行横幅：任务、同步、体检、领取或浏览器资源占用都统一展示
+  renderGlobalRunBanner(data);
   if (summary) {
     renderAccountSelectorBar(summary);
   }
 
-  // 2. 系统运行状态与复合胶囊
+  // 2. 多账号胶囊与系统运行状态
   const versionPill = document.getElementById('version-status-pill');
   const btnRun = document.getElementById('btn-run');
   const btnStop = document.getElementById('btn-stop');
@@ -1515,6 +1582,17 @@ function renderDashboard(data) {
     if (btnRunSingle) btnRunSingle.style.display = isAllMode ? 'none' : 'inline-flex';
     if (btnStopSingle) btnStopSingle.style.display = 'none';
   }
+
+  // 汇总卡片可能在前一轮仍显示运行中；每次状态刷新都按账号 ID 重新同步按钮。
+  document.querySelectorAll('.account-overview-card').forEach(card => {
+    const button = card.querySelector('.btn-run-single');
+    const owner = button?.getAttribute('data-running-account-id');
+    const active = !!owner && owner === runningAccountId && !!running;
+    if (button) {
+      button.disabled = active;
+      button.innerText = active ? '⏳ 运行中' : '▶️ 运行';
+    }
+  });
 
   refreshVersionPillTooltip();
 
@@ -1866,6 +1944,24 @@ function formatNextRun(sched) {
   }
 }
 
+function renderAccountTaskSummary(tasks = {}) {
+  const entries = Object.entries(tasks || {});
+  if (entries.length === 0) return '<span class="acc-task-empty">暂无任务数据</span>';
+  return entries.map(([key, task]) => {
+    if (!task) return '';
+    const done = !!task.done || (Number(task.max) > 0 && Number(task.progress || 0) >= Number(task.max));
+    const progress = Number(task.progress || 0);
+    const max = Number(task.max || 1) || 1;
+    const name = task.name || key;
+    const statusText = done ? '已完成' : progress + '/' + max;
+    return '<span class="acc-task-chip ' + (done ? 'done' : 'pending') + '" title="' + escapeHtml(name + '：' + progress + '/' + max + (done ? '（已完成）' : '')) + '">'
+      + '<span class="acc-task-dot"></span>'
+      + '<span class="acc-task-name">' + escapeHtml(name) + '</span>'
+      + '<span class="acc-task-state">' + escapeHtml(statusText) + '</span>'
+      + '</span>';
+  }).join('');
+}
+
 function renderAccountsOverviewGrid(accounts, runtime = {}) {
   const grid = document.getElementById('accounts-grid');
   if (!grid) return;
@@ -1911,9 +2007,17 @@ function renderAccountsOverviewGrid(accounts, runtime = {}) {
         </div>
       </div>
 
+      <div class="acc-task-summary">
+        <div class="acc-task-summary-head">
+          <span>任务摘要</span>
+          <strong>${acc.doneTasks || 0} / ${acc.totalTasks || 0} 项已完成</strong>
+        </div>
+        <div class="acc-task-list">${renderAccountTaskSummary(acc.tasks)}</div>
+      </div>
+
       <div class="progress-wrap">
         <div class="progress-labels">
-          <span>任务达成率: ${acc.doneTasks || 0}/${acc.totalTasks || 6} 项</span>
+          <span>任务达成率: ${acc.doneTasks || 0}/${acc.totalTasks || 0} 项</span>
           <span>${acc.percent || 0}%</span>
         </div>
         <div class="progress-bar-track">
@@ -1922,7 +2026,7 @@ function renderAccountsOverviewGrid(accounts, runtime = {}) {
       </div>
 
       <div class="acc-card-actions">
-        <button class="btn btn-primary btn-sm btn-run-single" title="立即运行此账号打卡">▶️ 运行</button>
+        <button class="btn btn-primary btn-sm btn-run-single" title="立即运行此账号打卡" data-running-account-id="${escapeHtml(acc.id)}" ${isRunning ? 'disabled' : ''}>${isRunning ? '⏳ 运行中' : '▶️ 运行'}</button>
         <button class="btn btn-secondary btn-sm btn-sync-single" title="从微软官网同步该账号今日真实进度">🔄 刷新</button>
         <button class="btn btn-secondary btn-sm btn-view-acc" title="进入该账号明细大屏">明细 ➜</button>
         <div class="acc-more-wrap">

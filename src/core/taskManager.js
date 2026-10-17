@@ -7,7 +7,7 @@ import authManager from './auth.js';
 import notifier from './notifier.js';
 import historyManager from './history.js';
 import browserManager from './browser.js';
-import { accountContextLock } from './contextLock.js';
+import { accountContextLock, browserSlotLock } from './contextLock.js';
 import { SearchStagnationGuard, normalizeStagnantLimit } from './searchStagnation.js';
 import memorySampler from './memorySampler.js';
 import { DATA_DIR, writeFileAtomic } from '../fsUtil.js';
@@ -696,16 +696,34 @@ export class TaskManager {
   }
 
   /**
+   * 让前端的全局运行横幅能显示领取任务的实际进度。
+   * 领取链路由 claimPendingPoints 持有账号上下文锁，浏览器资源锁在 launchBrowser 内获取。
+   */
+  getRuntimeLocks(selectedAccountId = 'all') {
+    const wanted = selectedAccountId && selectedAccountId !== 'all' ? selectedAccountId : '';
+    const account = wanted ? configManager.resolveAccount(wanted) : null;
+    const accountContext = accountContextLock.snapshot();
+    const browserSlot = browserSlotLock.snapshot();
+    return {
+      accountContext: {
+        ...accountContext,
+        accountId: this.runningAccountId || account?.id || ''
+      },
+      browserSlot
+    };
+  }
+
+  /**
    * 单次安全测试搜索 (仅搜 1 次，检验按键输入流与积分变化)
    */
-  async runSingleTestSearch(accountId = null) {
+  async runSingleTestSearch(accountId = null, options = {}) {
     // 必须用 resolveAccount：getAccount() 在 id 不存在时会回退到第一个账号，
     // 那样「测试副账号」可能实际跑在主账号上。
     const acc = configManager.resolveAccount(accountId);
     if (!acc) throw new Error('未找到对应账号');
-    // 注意持有者标识必须与任务执行（'task-run'）不同：
-    // 同一个标识会被当成「重入」而放行，那样任务跑着的时候照样能抢上下文。
-    if (!accountContextLock.tryAcquire('web-action')) {
+    const owned = !!options.owned;
+    // Web 路由可以先获取同一把锁再传 owned:true；直接调用时仍保持自我保护。
+    if (!owned && !accountContextLock.tryAcquire('web-action')) {
       throw new Error('已有任务正在执行，请稍后再试（避免账号上下文串台）');
     }
     try {
@@ -715,7 +733,7 @@ export class TaskManager {
       await this.syncAccountOfficialStatus(acc, { owned: true });
       return result;
     } finally {
-      accountContextLock.release('web-action');
+      if (!owned) accountContextLock.release('web-action');
     }
   }
 

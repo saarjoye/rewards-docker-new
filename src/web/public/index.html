@@ -134,6 +134,15 @@
         </div>
       </section>
 
+      <!-- 全局运行横幅：任务/同步/体检等进行中时显示当前占用者 -->
+      <section class="section-card global-run-banner" id="global-run-banner" style="display:none;">
+        <div class="global-run-banner-body">
+          <span id="global-run-icon" class="global-run-banner-icon">⏳</span>
+          <strong id="global-run-title" class="global-run-banner-title">任务正在执行中</strong>
+          <span id="global-run-detail" class="global-run-banner-detail"></span>
+          <span id="global-run-since" class="global-run-banner-since"></span>
+        </div>
+      </section>
       <!-- 全账号概览矩阵 (在“全部账号汇总”视图下展示) -->
       <section class="section-card accounts-overview-card" id="accounts-overview-card" style="display: none;">
         <div class="section-header">
@@ -506,7 +515,7 @@
           <p class="step-desc">该 Cookie 用于「必应 PC 搜索（60分）」、「每日活动集 Daily Set」与「桌面专享任务」。</p>
           <div class="step-action-box">
             <p>在电脑浏览器中登录 <a href="https://cn.bing.com/" target="_blank" style="color:#38BDF8;">cn.bing.com</a>，按 <code>F12</code> 打开控制台，在【网络/Network】或【应用程序/Application】中复制完整 Cookie 字符串，粘贴在下方：</p>
-            <textarea id="guide-cookie-input" class="form-textarea" rows="4" placeholder="推荐粘贴 Cookie-Editor 导出的 JSON（含 domain）；也兼容 cn.bing.com 的 Header String"></textarea>
+            <textarea id="guide-cookie-input" class="form-textarea" rows="4" placeholder='合并后的 JSON 数组，形如：[{"name":"SRCHD","domain":".bing.com",...},{"name":"MSPAuth","domain":".live.com",...}]'></textarea>
             <button id="guide-btn-test-cookie" class="btn btn-secondary" style="margin-top: 8px;">测试 Cookie 有效性</button>
             <div id="guide-cookie-result" class="hint-msg"></div>
           </div>
