@@ -43,8 +43,6 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchHistory(7);
   initLogStream();
   loadVersion();
-  // 首次打开自动触发官网真实完成度同步（解决新部署到 NAS 时任务全显为 0 的问题）
-  fetch('/api/status/sync', { method: 'POST' }).then(() => fetchStatus()).catch(() => {});
   setInterval(fetchStatus, 4000); // 4秒轮询一次任务状态
   setInterval(fetchSystemMetrics, 4000); // 4秒轮询硬件与网络延时
   setInterval(fetchBrowserStatus, 2500); // 2.5秒轮询无头浏览器状态
