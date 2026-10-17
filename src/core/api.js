@@ -323,7 +323,8 @@ export class RewardsApi {
     try {
       const html = await networkClient.request({
         url: `https://${this.host}/`,
-        headers: pcPageHeaders()
+        headers: pcPageHeaders(),
+        cookieOverride: '' // 地区检测只验证出口 IP 所属国家，绝不附带任何账号 Cookie，彻底防止 HTTP 400
       });
 
       if (!html) {
@@ -1474,6 +1475,105 @@ export class RewardsApi {
       } catch (eQuest) {
         logger.log('🟡', `桌面专属任务解析跳过: ${eQuest.message}`);
       }
+
+      // 2. 从 cn.bing.com panelflyout 补充待办活动（确保即使 earn 页面未水合，任务也全量发现）
+      try {
+        const flyoutRaw = await networkClient.request({
+          url: `https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards&_=${Date.now()}`,
+          headers: pcXhrHeaders({
+            'referer': 'https://www.bing.com/',
+            'sec-fetch-site': 'same-site'
+          })
+        }).catch(() => '');
+        const flyoutData = typeof flyoutRaw === 'string' && flyoutRaw.startsWith('{') ? JSON.parse(flyoutRaw) : flyoutRaw;
+        const fly = flyoutData?.flyoutResult || {};
+        const promoArrays = [
+          fly.dailySetPromotions,
+          fly.morePromotions,
+          fly.highValueActionPromotions,
+          fly.exploreOnBingPromotions,
+          fly.exploreOnOutlookPromotions,
+          fly.pointClaimCardPromotion,
+          fly.onboardingChecklistPromotions
+        ];
+        let flyCount = 0;
+        for (const arr of promoArrays) {
+          if (!Array.isArray(arr)) continue;
+          for (const item of arr) {
+            if (item.complete === true || item.isCompleted === true) continue;
+            const offerId = item.offerId || item.attributes?.offerid || item.name;
+            if (!offerId || /impression|sweeps|challenge_exempt|DailyCheckIn|search_PC|readarticle/i.test(offerId)) continue;
+            const points = Number(item.attributes?.max || item.pointProgressMax || 10);
+            if (points <= 0) continue;
+            const title = item.title || item.attributes?.cardtitle || item.attributes?.title || item.name || offerId;
+            const destination = item.destinationUrl || item.attributes?.destination || '';
+            const category = /dailyset/i.test(offerId) ? 'dailyset' : (/desktop/i.test(offerId) ? 'desktop' : 'promo');
+            pushCard({
+              title,
+              points: points || 10,
+              offerId,
+              hash: item.hash || item.attributes?.hash || '1',
+              kind: inferKind(offerId, title),
+              destination,
+              category,
+              url: 'https://rewards.bing.com/earn'
+            });
+            flyCount++;
+          }
+        }
+        if (flyCount > 0) {
+          logger.log('🧩', `从必应任务流汇总到 ${flyCount} 项待办活动卡片`);
+        }
+      } catch (eFly) {
+        logger.log('🟡', `必应任务流扫描异常: ${eFly.message}`);
+      }
+
+      // 3. 从移动端 DAPI 补充日常活动与未完成任务（多通道聚合，绝不漏掉任何任务）
+      try {
+        const { default: authManager } = await import('./auth.js');
+        const token = authManager.getAccessToken(this.currentAccountId);
+        if (token) {
+          const dapiRes = await networkClient.request({
+            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
+            headers: {
+              'content-type': 'application/json; charset=UTF-8',
+              'user-agent': APP_USER_AGENT,
+              'authorization': `Bearer ${token}`,
+              'x-rewards-appid': 'SAAndroid/32.6.2110003560',
+              'x-rewards-ismobile': 'true',
+              'x-rewards-country': 'cn',
+              'x-rewards-language': 'zh'
+            }
+          });
+          const dapiData = typeof dapiRes === 'string' && dapiRes.startsWith('{') ? JSON.parse(dapiRes) : dapiRes;
+          const dapiPromos = dapiData?.response?.promotions || [];
+          let dapiCount = 0;
+          for (const p of dapiPromos) {
+            if (p.attributes?.complete === 'True' || p.attributes?.complete === true) continue;
+            const offerId = p.attributes?.offerid || p.name;
+            if (!offerId || /readarticle|search_global|DailyCheckIn|sweep|challenge_exempt/i.test(offerId)) continue;
+            const points = Number(p.attributes?.max || 10);
+            if (points <= 0) continue;
+            const title = p.attributes?.title || p.name || offerId;
+            const destination = p.attributes?.destination || '';
+            const category = /dailyset/i.test(offerId) ? 'dailyset' : (/desktop/i.test(offerId) ? 'desktop' : 'promo');
+            pushCard({
+              title,
+              points,
+              offerId,
+              hash: p.attributes?.hash || '1',
+              kind: inferKind(offerId, title),
+              destination,
+              category,
+              url: 'https://rewards.bing.com/earn'
+            });
+            dapiCount++;
+          }
+          if (dapiCount > 0) {
+            logger.log('📱', `从移动端任务流汇总到 ${dapiCount} 项待办活动卡片`);
+          }
+        }
+      } catch (eDapi) {}
     } catch (e) {
       logger.log('🔴', `扫描活动卡片失败: ${e.message}`);
     }

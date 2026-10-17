@@ -534,6 +534,10 @@ class BrowserManager extends EventEmitter {
 
   /** 关闭共享抓取浏览器（空闲超时或任务结束时调用） */
   async closeSharedFetcher() {
+    if (this.sharedFetcherActiveRequests > 0) {
+      // 正在进行页面抓取，暂不关闭，避免 Target page, context or browser has been closed 异常
+      return;
+    }
     const pending = this.sharedFetcherPromise;
     if (pending) {
       try { await pending; } catch {}
@@ -558,7 +562,9 @@ class BrowserManager extends EventEmitter {
   }
 
   async fetchPageHtml(acc, url) {
-    const f = await this.acquireSharedFetcher(acc);
+    this.sharedFetcherActiveRequests = (this.sharedFetcherActiveRequests || 0) + 1;
+    try {
+      const f = await this.acquireSharedFetcher(acc);
     if (f.lastAccountId !== acc?.id) {
       // 换账号时更新 Cookie
       await f.context.clearCookies().catch(() => {});
@@ -579,6 +585,10 @@ class BrowserManager extends EventEmitter {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          const curUrl = page.url();
+          if (curUrl.includes('login.live.com') || curUrl.includes('/about') || curUrl.includes('/auth/callback')) {
+            throw new Error(`页面要求重新登录认证 (${curUrl.split('?')[0]})`);
+          }
           await page.waitForFunction(() => {
             const labels = ['今日积分', '每日连续打卡', '可领取', '可用积分'];
             const nodes = [...document.querySelectorAll('p')];
@@ -606,6 +616,9 @@ class BrowserManager extends EventEmitter {
       throw lastError || new Error('页面渲染超时');
     } finally {
       await page.close().catch(() => {});
+    }
+    } finally {
+      this.sharedFetcherActiveRequests = Math.max(0, (this.sharedFetcherActiveRequests || 1) - 1);
     }
   }
 
