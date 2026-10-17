@@ -419,13 +419,19 @@ class BrowserManager extends EventEmitter {
    * 同一网络下用 Chrome 打开（无论是否带 Cookie）都返回 200 和完整页面。
    * 因此今日积分/连续签到/可领取/活动卡片必须走浏览器渲染路径。
    */
-  async fetchEarnPageHtml(acc) {
-    const { context, page } = await this.withTemporaryPage(acc, 'https://rewards.bing.com/earn');
+  async fetchPageHtml(acc, url) {
+    const { browser, context, page } = await this.withTemporaryPage(acc, url);
     try {
       return await page.content();
     } finally {
       await context.close().catch(() => {});
+      // 关键：必须关闭 browser 进程，否则每次同步都会泄漏一个 Chromium（数百 MB）
+      await browser.close().catch(() => {});
     }
+  }
+
+  async fetchEarnPageHtml(acc) {
+    return this.fetchPageHtml(acc, 'https://rewards.bing.com/earn');
   }
 
   /**
@@ -435,7 +441,7 @@ class BrowserManager extends EventEmitter {
   async withTemporaryPage(acc, url) {
     const slotOwner = `earn-page:${Date.now()}`;
     const gotSlot = await browserSlotLock.acquire(slotOwner, 180000);
-    if (!gotSlot) throw new Error('浏览器资源正被其它任务占用，请稍后重试');
+    if (!gotSlot) throw new Error("浏览器资源正被其它任务占用，请稍后重试");
     let browser = null;
     let context = null;
     try {
@@ -473,7 +479,7 @@ class BrowserManager extends EventEmitter {
       const page = await context.newPage();
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForTimeout(3500);
-      return { context, page };
+      return { browser, context, page };
     } catch (e) {
       if (context) await context.close().catch(() => {});
       if (browser) await browser.close().catch(() => {});

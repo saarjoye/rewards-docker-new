@@ -509,15 +509,39 @@ export class RewardsApi {
     return { html, source: 'http' };
   }
 
+  /**
+   * 抓取 /dashboard 页面 HTML：优先浏览器，失败回退 HTTP。
+   * 与 /earn 同理：纯 HTTP 会被重定向到登录页，拿不到「可领取」等数据。
+   */
+  async fetchDashboardHtmlPreferBrowser() {
+    if (process.env.MSR_DISABLE_BROWSER_FETCH === '1') {
+      const html = await networkClient.request({
+        url: 'https://rewards.bing.com/dashboard',
+        headers: pcPageHeaders()
+      });
+      return { html, source: 'http' };
+    }
+    try {
+      const { default: browserManager } = await import('./browser.js');
+      const acc = configManager.resolveAccount(this.currentAccountId);
+      const html = await browserManager.fetchPageHtml(acc, 'https://rewards.bing.com/dashboard');
+      if (html && String(html).length > 100000) return { html, source: 'browser' };
+    } catch (e) {
+      logger.log('🟡', `浏览器抓取 /dashboard 失败，回退 HTTP: ${e.message}`);
+    }
+    const html = await networkClient.request({
+      url: 'https://rewards.bing.com/dashboard',
+      headers: pcPageHeaders()
+    });
+    return { html, source: 'http' };
+  }
+
   async getRewardsInfo(maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const [html, dashHtml, flyoutRaw] = await Promise.all([
           this.fetchEarnHtmlPreferBrowser().then(r => r.html).catch(() => ''),
-          networkClient.request({
-            url: 'https://rewards.bing.com/dashboard',
-            headers: pcPageHeaders()
-          }).catch(() => ''),
+          this.fetchDashboardHtmlPreferBrowser().then(r => r.html).catch(() => ''),
           networkClient.request({
             url: `https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards&_=${Date.now()}`,
             headers: pcXhrHeaders({
@@ -1723,10 +1747,7 @@ export class RewardsApi {
   async checkStreak(options = {}) {
     const { allowVisualSearchCheckIn = false } = options;
     try {
-      const html = await networkClient.request({
-        url: 'https://rewards.bing.com/earn',
-        headers: pcPageHeaders()
-      });
+      const { html } = await this.fetchEarnHtmlPreferBrowser();
       if (!html) return null;
 
       // 官网是 Next.js RSC 页面，正文数字在 Flight 数据流里，
@@ -1774,10 +1795,7 @@ export class RewardsApi {
    */
   async checkClaimablePoints() {
     try {
-      const html = await networkClient.request({
-        url: 'https://rewards.bing.com/dashboard',
-        headers: pcPageHeaders()
-      });
+      const { html } = await this.fetchDashboardHtmlPreferBrowser();
       const claimableMatch = String(html).match(/alt="可领取"[^>]*>[\s\S]*?(\d[\d,]*)/i);
       if (claimableMatch) {
         const amount = parseInt(claimableMatch[1].replace(/,/g, '')) || 0;
