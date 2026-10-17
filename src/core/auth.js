@@ -2,6 +2,7 @@ import configManager from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
 import { APP_USER_AGENT, pcPageHeaders } from './fingerprint.js';
+import { parseCookieInput, cookieHeaderFor } from './cookieImport.js';
 
 export const AUTH_CONFIG = {
   clientId: '0000000040170455',
@@ -142,8 +143,42 @@ export function parseCookieValue(cookie, name) {
 }
 
 export function hasCookie(cookie, name) {
+  if (!cookie) return false;
+  const text = typeof cookie === 'string' ? cookie.trim() : '';
+  if (text.startsWith('[')) {
+    const parsed = parseCookieInput(text, '.bing.com');
+    return !!parsed && parsed.cookies.some(c => c.name === name && c.value !== '');
+  }
   const value = parseCookieValue(cookie, name);
   return value !== null && value !== '';
+}
+
+/**
+ * 判断 Cookie 是否覆盖 rewards.bing.com 登录所需的跨域会话。
+ * JSON 导出应包含 .live.com / rewards.bing.com 的会话；Header String 天然不包含。
+ */
+function describeCookieScope(cookie) {
+  const text = typeof cookie === 'string' ? cookie.trim() : '';
+  if (!text.startsWith('[')) {
+    return { format: 'header', domains: ['.bing.com'], crossDomainReady: false };
+  }
+  const parsed = parseCookieInput(text, '.bing.com');
+  if (!parsed) return { format: 'json', domains: [], crossDomainReady: false };
+  const domains = parsed.domains;
+  const hasLive = domains.some(d => d === '.live.com' || d.endsWith('live.com'));
+  const hasRewards = domains.some(d => d === 'rewards.bing.com' || d.endsWith('.rewards.bing.com'));
+  return { format: 'json', domains, crossDomainReady: hasLive && hasRewards };
+}
+
+/** 把配置里的 Cookie 转成某站点可直接发送的 Cookie 头 */
+function cookieHeaderForUrl(cookie, url) {
+  if (!cookie) return '';
+  const text = typeof cookie === 'string' ? cookie.trim() : '';
+  if (text.startsWith('[')) {
+    const parsed = parseCookieInput(text, '.bing.com');
+    return parsed ? cookieHeaderFor(parsed, url) : '';
+  }
+  return cookie;
 }
 
 export function isCookieUserLoggedIn(raw) {
@@ -409,17 +444,18 @@ export class AuthManager {
     }
 
     const hasU = hasCookie(cookie, '_U');
-    // 诊断：列出配置里实际包含的 Cookie 名称（不含值），用于判断是否缺少 live.com 会话
-    const cookieNames = String(cookie).split(';')
-      .map(part => part.trim().split('=')[0])
-      .filter(Boolean);
+    const scope = describeCookieScope(cookie);
+    // 诊断：列出配置里实际包含的 Cookie 名称（不含值）
+    const cookieNames = scope.format === 'json'
+      ? (parseCookieInput(String(cookie), '.bing.com')?.cookies || []).map(c => c.name)
+      : String(cookie).split(';').map(part => part.trim().split('=')[0]).filter(Boolean);
     let identityData;
     try {
       const rawIdentity = await networkClient.request({
         url: 'https://cn.bing.com/rewards/panelflyout/getuserinfo',
         headers: pcPageHeaders({
           'referer': 'https://cn.bing.com/',
-          'cookie': cookie
+          'cookie': cookieHeaderForUrl(cookie, 'https://cn.bing.com/rewards/panelflyout/getuserinfo')
         })
       });
       identityData = typeof rawIdentity === 'string' ? JSON.parse(rawIdentity) : rawIdentity;
@@ -452,20 +488,31 @@ export class AuthManager {
         sameAccount: null,
         matchMethod: 'identity',
         identityMessage: 'Cookie 未提供有效的已登录微软身份',
-        message: hasU ? 'Cookie 已失效或不是已登录状态，请在 cn.bing.com 重新登录后获取' : 'Cookie 缺少 _U 或已失效，请在 cn.bing.com 重新登录后获取完整 Cookie',
-        cookieNames
+        message: hasU
+          ? 'Cookie 已失效或不是已登录状态，请重新登录后获取'
+          : (scope.format === 'header'
+              ? 'Cookie 缺少 _U 或已失效。更常见的是：Header String 只有 bing.com 域，拿不到 rewards.bing.com 新版 OAuth 会话，请在 rewards.bing.com 用 Cookie-Editor 导出 JSON 后重新导入'
+              : 'JSON 中没有 _U，导出时请确保在已登录的 rewards.bing.com 页面进行'),
+        cookieNames,
+        cookieFormat: scope.format,
+        cookieDomains: scope.domains,
+        crossDomainReady: scope.crossDomainReady
       };
     }
 
     const identityEvidence = createIdentityEvidence(identityData, {
       _U: parseCookieValue(cookie, '_U')
     });
-    const uWarning = hasU ? '' : ' | 缺少 _U 登录标头，必应搜索无法关联账号计分！请在电脑登录 cn.bing.com 重新抓取完整 Cookie';
+    // JSON 且跨域会话齐全时，浏览器路径不需要 _U（实测 Chrome 里也没有 _U）
+    const needsUWarning = !hasU && !scope.crossDomainReady;
+    const uWarning = needsUWarning
+      ? ' | 缺少 _U 登录标头，必应搜索无法关联账号计分！请用 Cookie-Editor 在 rewards.bing.com 导出 JSON 后重新导入'
+      : '';
     const identityStatus = {
       valid: true,
       hasU,
       warning: !hasU,
-      warningMessage: hasU ? '' : '缺少 _U 登录标头：必应搜索无法关联账号计分，请在电脑登录 cn.bing.com 后重新抓取完整 Cookie',
+      warningMessage: needsUWarning ? '缺少 _U 登录标头：必应搜索无法关联账号计分，请在已登录的 rewards.bing.com 用 Cookie-Editor 导出 JSON 后重新导入（Header String 也可从 cn.bing.com 抓取）' : '',
       identityMatch: 'unknown',
       sameAccount: null,
       matchMethod: 'identity',
@@ -484,7 +531,7 @@ export class AuthManager {
         url: 'https://rewards.bing.com/earn',
         headers: pcPageHeaders({
           'referer': 'https://rewards.bing.com/',
-          'cookie': cookie
+          'cookie': cookieHeaderForUrl(cookie, 'https://rewards.bing.com/earn')
         })
       });
       const clean = String(earnHtml).replace(/\\"/g, '"');
@@ -540,6 +587,9 @@ export class AuthManager {
     identityStatus.streakDays = streakDays;
     identityStatus.stamps = { progress: stampsProgress, max: stampsMax };
     identityStatus.pcSearch = `${pcProgress}/${pcMax}`;
+    identityStatus.cookieFormat = scope.format;
+    identityStatus.cookieDomains = scope.domains;
+    identityStatus.crossDomainReady = scope.crossDomainReady;
     identityStatus.message = `网页端身份已登录！${userName ? `用户: ${userName} | ` : ''}积分: ${balance} | 连续签到: ${streakDays}天 | 印章进度: ${stampsProgress}/${stampsMax} | 搜索配额: ${pcProgress}/${pcMax}${uWarning}${businessMessage ? ` | ${businessMessage}` : ''}`;
     return attachIdentityEvidence(identityStatus, identityEvidence);
   }
