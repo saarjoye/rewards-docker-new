@@ -1067,6 +1067,62 @@ export class TaskManager {
 
     if (!this.running) return;
 
+    this.setRunPhase('quests', '正在处理账号 ' + accountName + ' 的任务打孔卡');
+    // 4.5 任务区打孔卡 (如「十月必看五大亮点」这类每天解锁一个的任务)
+    //     旧版本完全没处理这类任务，导致官网上长期停在 0/5。
+    if (globalCfg.tasks?.promos && this.running && browserManager.getExecutablePath()) {
+      const cur = this.ensureAccountStats(accountId);
+      const isManual = options.manual === true;
+      const punchCards = Object.values(cur.tasks || {}).filter(t => t && t.isPunchCard);
+      const isAllQuestsFinished = punchCards.length > 0 && punchCards.every(t => t.done);
+
+      // 若全部打孔卡已经满额完成，自动巡检时不重复启动浏览器
+      if (isAllQuestsFinished && !isManual) {
+        // 全部已达成，静默跳过
+      } else {
+        // 冷却判定：手动触发时无视冷却立刻检查；自动巡检时若 2 小时内刚检查过且无新解锁则等待
+        const lastCheck = cur.lastQuestCheckTime || 0;
+        const cooldownMs = 2 * 60 * 60 * 1000;
+        const inCooldown = !isManual && (Date.now() - lastCheck < cooldownMs);
+
+        if (!inCooldown) {
+          cur.lastQuestCheckTime = Date.now();
+          try {
+            const quests = await rewardsApi.getQuestPunchCards();
+            const pendingQuests = quests.filter(q => !q.done);
+            if (pendingQuests.length > 0) {
+              const questRes = await browserManager.runQuestPunchCards(accCfg, pendingQuests);
+              if (questRes.completed > 0) {
+                logger.addTimeline(accountName, `任务打孔卡推进 ${questRes.completed} 项`);
+                if (questRes.details && questRes.details.length > 0) {
+                  this.recordPunchCardSteps(accountId, questRes.details);
+                }
+                // 同步一次官网真实状态
+                await this.syncAccountOfficialStatus(accCfg, { owned: true });
+              }
+            }
+            this.saveStats();
+          } catch (e) {
+            logger.log('🟡', `任务打孔卡处理异常: ${e.message}`, '', accountName);
+          }
+        }
+      }
+    }
+
+    if (!this.running) return;
+
+    this.setRunPhase('streak', '正在检查账号 ' + accountName + ' 的连签与额外积分');
+    // 5. 连签检测与额外积分检测
+    //    视觉搜索补签只在任务执行期尝试（每账号每天一次），读取进度的同步流程不再触发
+    const streakInfo = await rewardsApi.checkStreak({ allowVisualSearchCheckIn: true });
+    if (streakInfo?.streakDays) {
+      accStats.streakDays = streakInfo.streakDays;
+      logger.log('🔥', `连续打卡记录: ${accStats.streakDays} 天`, accountName);
+    }
+    await rewardsApi.checkClaimablePoints();
+
+    if (!this.running) return;
+
     this.setRunPhase('search', '正在处理账号 ' + accountName + ' 的 PC 搜索任务');
     // 4. 必应 PC 搜索任务与仪表盘同步
     const info = await rewardsApi.getRewardsInfo();
@@ -1159,60 +1215,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
-    this.setRunPhase('quests', '正在处理账号 ' + accountName + ' 的任务打孔卡');
-    // 4.5 任务区打孔卡 (如「十月必看五大亮点」这类每天解锁一个的任务)
-    //     旧版本完全没处理这类任务，导致官网上长期停在 0/5。
-    if (globalCfg.tasks?.promos && this.running && browserManager.getExecutablePath()) {
-      const cur = this.ensureAccountStats(accountId);
-      const isManual = options.manual === true;
-      const punchCards = Object.values(cur.tasks || {}).filter(t => t && t.isPunchCard);
-      const isAllQuestsFinished = punchCards.length > 0 && punchCards.every(t => t.done);
-
-      // 若全部打孔卡已经满额完成，自动巡检时不重复启动浏览器
-      if (isAllQuestsFinished && !isManual) {
-        // 全部已达成，静默跳过
-      } else {
-        // 冷却判定：手动触发时无视冷却立刻检查；自动巡检时若 2 小时内刚检查过且无新解锁则等待
-        const lastCheck = cur.lastQuestCheckTime || 0;
-        const cooldownMs = 2 * 60 * 60 * 1000;
-        const inCooldown = !isManual && (Date.now() - lastCheck < cooldownMs);
-
-        if (!inCooldown) {
-          cur.lastQuestCheckTime = Date.now();
-          try {
-            const quests = await rewardsApi.getQuestPunchCards();
-            const pendingQuests = quests.filter(q => !q.done);
-            if (pendingQuests.length > 0) {
-              const questRes = await browserManager.runQuestPunchCards(accCfg, pendingQuests);
-              if (questRes.completed > 0) {
-                logger.addTimeline(accountName, `任务打孔卡推进 ${questRes.completed} 项`);
-                if (questRes.details && questRes.details.length > 0) {
-                  this.recordPunchCardSteps(accountId, questRes.details);
-                }
-                // 同步一次官网真实状态
-                await this.syncAccountOfficialStatus(accCfg, { owned: true });
-              }
-            }
-            this.saveStats();
-          } catch (e) {
-            logger.log('🟡', `任务打孔卡处理异常: ${e.message}`, '', accountName);
-          }
-        }
-      }
-    }
-
-    if (!this.running) return;
-
-    this.setRunPhase('finish', '正在结算账号 ' + accountName + ' 的积分与连签');
-    // 5. 连签检测与额外积分检测
-    //    视觉搜索补签只在任务执行期尝试（每账号每天一次），读取进度的同步流程不再触发
-    const streakInfo = await rewardsApi.checkStreak({ allowVisualSearchCheckIn: true });
-    if (streakInfo?.streakDays) {
-      accStats.streakDays = streakInfo.streakDays;
-      logger.log('🔥', `连续打卡记录: ${accStats.streakDays} 天`, accountName);
-    }
-    await rewardsApi.checkClaimablePoints();
-
+    this.setRunPhase('finish', '正在结算账号 ' + accountName + ' 的积分与统计');
     // 6. 结算单账号总积分
     // 余额与「今日已增」都以官网为准：这里再取一次，把本轮新做的部分算进去
     const finalInfo = await rewardsApi.getRewardsInfo(1);
