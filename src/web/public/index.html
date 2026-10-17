@@ -506,7 +506,7 @@
           <p class="step-desc">该 Cookie 用于「必应 PC 搜索（60分）」、「每日活动集 Daily Set」与「桌面专享任务」。</p>
           <div class="step-action-box">
             <p>在电脑浏览器中登录 <a href="https://cn.bing.com/" target="_blank" style="color:#38BDF8;">cn.bing.com</a>，按 <code>F12</code> 打开控制台，在【网络/Network】或【应用程序/Application】中复制完整 Cookie 字符串，粘贴在下方：</p>
-            <textarea id="guide-cookie-input" class="form-textarea" rows="4" placeholder="粘贴 cn.bing.com 的完整 Cookie 字符串（必须包含 _U）"></textarea>
+            <textarea id="guide-cookie-input" class="form-textarea" rows="4" placeholder="推荐粘贴 Cookie-Editor 导出的 JSON（含 domain）；也兼容 cn.bing.com 的 Header String"></textarea>
             <button id="guide-btn-test-cookie" class="btn btn-secondary" style="margin-top: 8px;">测试 Cookie 有效性</button>
             <div id="guide-cookie-result" class="hint-msg"></div>
           </div>
@@ -634,13 +634,17 @@
             <label class="form-label">必应网页端 Cookie (针对当前选中的账号)</label>
             <div class="input-with-btn">
               <div class="secret-field">
-                <input type="password" id="cfg-cookie" class="form-input" autocomplete="off" spellcheck="false" placeholder="粘贴浏览器 cn.bing.com 的完整 Cookie（必须包含 _U）">
+              <textarea id="cfg-cookie" class="form-textarea" rows="4" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Cookie：优先用「Cookie-Editor」等扩展导出的 JSON（含 domain，跨域登录必需）；也兼容 cn.bing.com 的 Header String"></textarea>
                 <button type="button" class="secret-toggle" data-target="cfg-cookie" title="显示 / 隐藏 Cookie">👁</button>
               </div>
               <button type="button" id="btn-test-modal-cookie" class="btn btn-secondary btn-sm" title="测试该 Cookie 有效性与余额">测试有效性</button>
               <button type="button" id="btn-clear-modal-cookie" class="btn btn-danger-soft btn-sm" title="清空该账号保存的 Cookie">清空</button>
             </div>
-            <small class="form-hint" id="cfg-cookie-hint">请在 cn.bing.com 抓取，必须包含 _U；KievRPSSecAuth 不能替代。PC 搜索、每日活动集与桌面任务必备</small>
+            <small class="form-hint" id="cfg-cookie-hint">
+          推荐：用 Cookie-Editor 在 <b>rewards.bing.com</b> 页面「导出为 JSON」后整段粘贴（必须包含 <code>.live.com</code>、<code>rewards.bing.com</code> 域的 Cookie，否则会被重定向到登录页）。<br>
+          兼容：cn.bing.com 的 Header String（必须含 <code>_U</code>）。<br>
+          校验方式：配置中心 → 账号体检；若日志出现「浏览器落地: login.live.com」说明 Cookie 不完整。
+        </small>
             <div id="cfg-cookie-test-result" style="margin-top: 6px; font-size: 12px;"></div>
           </div>
 

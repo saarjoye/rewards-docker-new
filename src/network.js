@@ -2,6 +2,7 @@ import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import configManager from './config.js';
+import { parseCookieInput, cookieHeaderFor } from './core/cookieImport.js';
 
 // 只有这些域名才允许附带微软账号 Cookie。
 // 否则推送渠道（企业微信/钉钉/飞书/Bark/PushMe/Telegram）、热搜词接口、IP 查询接口
@@ -34,6 +35,9 @@ function isMicrosoftHost(url) {
  */
 export function normalizeCookieString(raw) {
   if (!raw || typeof raw !== 'string') return '';
+  // JSON 形式（含 domain 的完整导出）原样保留，不能按分号拆分
+  const trimmedJson = raw.trim();
+  if (trimmedJson.startsWith('[')) return trimmedJson;
   return raw
     .split(/[\r\n]+/)
     .map(line => line.trim())

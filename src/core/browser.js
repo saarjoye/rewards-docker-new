@@ -11,6 +11,7 @@ import rewardsApi from './api.js';
 import configManager from '../config.js';
 import { browserSlotLock } from './contextLock.js';
 import { readBrowserSession, writeBrowserSession } from './browserSession.js';
+import { parseCookieInput } from './cookieImport.js';
 import { SearchStagnationGuard } from './searchStagnation.js';
 import {
   PC_USER_AGENT,
@@ -96,6 +97,13 @@ class BrowserManager extends EventEmitter {
    */
   parseCookies(cookieStr, defaultDomain = '.bing.com') {
     if (!cookieStr || typeof cookieStr !== 'string') return [];
+    // JSON（含 domain 的完整导出）走新解析器，保留每个 Cookie 自己的 domain；
+    // Header String 继续走下面的旧逻辑（属性过滤/去重/Safari/Netscape 兼容）。
+    if (cookieStr.trim().startsWith('[')) {
+      const parsed = parseCookieInput(cookieStr, defaultDomain);
+      if (parsed && parsed.cookies.length > 0) return parsed.cookies;
+    }
+    if (typeof cookieStr !== 'string') return [];
     const rawDomain = String(defaultDomain || '.bing.com').trim() || '.bing.com';
     const domain = rawDomain.startsWith('.') ? rawDomain : '.' + rawDomain;
     // __Host- 前缀 Cookie 不允许 Domain 属性，必须绑定到具体主机 +
@@ -477,8 +485,13 @@ class BrowserManager extends EventEmitter {
         await this.addCookiesSafely(context, cookies, acc?.name);
       }
       const page = await context.newPage();
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(err => {
+        logger.log('🟡', `页面导航异常: ${err.message}`);
+      });
       await page.waitForTimeout(3500);
+      try {
+        logger.log('🌐', `浏览器落地: ${page.url()} | 标题: ${await page.title()}`);
+      } catch {}
       return { browser, context, page };
     } catch (e) {
       if (context) await context.close().catch(() => {});

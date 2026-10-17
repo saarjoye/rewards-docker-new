@@ -409,6 +409,10 @@ export class AuthManager {
     }
 
     const hasU = hasCookie(cookie, '_U');
+    // 诊断：列出配置里实际包含的 Cookie 名称（不含值），用于判断是否缺少 live.com 会话
+    const cookieNames = String(cookie).split(';')
+      .map(part => part.trim().split('=')[0])
+      .filter(Boolean);
     let identityData;
     try {
       const rawIdentity = await networkClient.request({
@@ -448,7 +452,8 @@ export class AuthManager {
         sameAccount: null,
         matchMethod: 'identity',
         identityMessage: 'Cookie 未提供有效的已登录微软身份',
-        message: hasU ? 'Cookie 已失效或不是已登录状态，请在 cn.bing.com 重新登录后获取' : 'Cookie 缺少 _U 或已失效，请在 cn.bing.com 重新登录后获取完整 Cookie'
+        message: hasU ? 'Cookie 已失效或不是已登录状态，请在 cn.bing.com 重新登录后获取' : 'Cookie 缺少 _U 或已失效，请在 cn.bing.com 重新登录后获取完整 Cookie',
+        cookieNames
       };
     }
 
