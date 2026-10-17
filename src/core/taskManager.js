@@ -648,24 +648,45 @@ export class TaskManager {
   /**
    * 领取 Dashboard 待领取额外积分
    */
+  /**
+   * 领取 Dashboard 额外待领积分。
+   *
+   * 必须持有账号上下文锁：领取过程中会切换全局 Cookie 上下文，
+   * 如果此时定时任务正在跑，会把积分算到别的账号头上。
+   * 锁被占用时返回明确原因（谁占用、占用多久），而不是静默返回 0。
+   */
   async claimPendingPoints(targetAccountId = 'all') {
-    const accounts = configManager.getAccounts().filter(a => a.enabled !== false && a.cookie);
-    const targets = targetAccountId === 'all' ? accounts : accounts.filter(a => a.id === targetAccountId);
-    let totalClaimed = 0;
-    for (const acc of targets) {
-      try {
-        rewardsApi.setCurrentAccount(acc);
-        const pts = await browserManager.claimDashboardPoints(acc);
-        if (pts > 0) {
-          totalClaimed += pts;
-          const st = this.ensureAccountStats(acc.id);
-          st.balance = (st.balance || 0) + pts;
-          st.claimablePoints = 0;
-          this.saveStats();
-        }
-      } catch {}
+    if (!accountContextLock.tryAcquire('claim-points')) {
+      const snap = accountContextLock.snapshot();
+      return {
+        claimed: 0,
+        skipped: true,
+        owner: snap.owner,
+        heldMs: snap.heldMs,
+        reason: `账号上下文正被 [${snap.owner}] 占用（已 ${Math.round(snap.heldMs / 1000)} 秒），请稍后再试`
+      };
     }
-    return totalClaimed;
+    try {
+      const accounts = configManager.getAccounts().filter(a => a.enabled !== false && a.cookie);
+      const targets = targetAccountId === 'all' ? accounts : accounts.filter(a => a.id === targetAccountId);
+      let totalClaimed = 0;
+      for (const acc of targets) {
+        try {
+          rewardsApi.setCurrentAccount(acc);
+          const pts = await browserManager.claimDashboardPoints(acc);
+          if (pts > 0) {
+            totalClaimed += pts;
+            const st = this.ensureAccountStats(acc.id);
+            st.balance = (st.balance || 0) + pts;
+            st.claimablePoints = 0;
+            this.saveStats();
+          }
+        } catch {}
+      }
+      return { claimed: totalClaimed, skipped: false, reason: '' };
+    } finally {
+      accountContextLock.release('claim-points');
+    }
   }
 
   /**

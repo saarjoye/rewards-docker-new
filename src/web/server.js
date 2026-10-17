@@ -32,7 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.8.7';
+const CURRENT_VERSION = '1.8.8';
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
@@ -880,11 +880,20 @@ export function createServer() {
         });
       }
 
-      const claimed = await taskManager.claimPendingPoints(accountId);
+      const result = await taskManager.claimPendingPoints(accountId);
+      if (result.skipped) {
+        return res.json({
+          success: false,
+          skipped: true,
+          claimed: 0,
+          owner: result.owner,
+          message: result.reason
+        });
+      }
       res.json({
         success: true,
-        claimed,
-        message: claimed > 0 ? `成功领取 ${claimed} 点额外积分！` : '当前没有待领取的额外积分'
+        claimed: result.claimed,
+        message: result.claimed > 0 ? `成功领取 ${result.claimed} 点额外积分！` : '当前没有待领取的额外积分'
       });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });

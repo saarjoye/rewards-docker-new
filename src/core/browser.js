@@ -471,8 +471,10 @@ class BrowserManager extends EventEmitter {
       this.sharedFetcher.lastUsedAt = Date.now();
       return this.sharedFetcher;
     }
-    const gotSlot = await browserSlotLock.acquire('shared-fetcher', 180000);
-    if (!gotSlot) throw new Error('浏览器资源正被其它任务占用，请稍后重试');
+    // 注意：不长期持有 browserSlotLock。
+    // 共享抓取只会发生在持有 accountContextLock 的流程里（同步/任务），
+    // 其他浏览器流程此时本来就会被账号锁挡住；若长期占着 browserSlotLock，
+    // 反而会把「领取额外积分」等流程永久挡在门外（实测 log：浏览器资源正被其它任务占用）。
     try {
       const executablePath = this.getExecutablePath();
       if (!executablePath) throw new Error('未检测到 Chromium');
@@ -508,7 +510,6 @@ class BrowserManager extends EventEmitter {
       this.sharedFetcher = { browser, context, lastUsedAt: Date.now(), slotHeld: true };
       return this.sharedFetcher;
     } catch (e) {
-      browserSlotLock.release('shared-fetcher');
       throw e;
     }
   }
@@ -520,7 +521,6 @@ class BrowserManager extends EventEmitter {
     this.sharedFetcher = null;
     try { await f.context.close(); } catch {}
     try { await f.browser.close(); } catch {}
-    browserSlotLock.release('shared-fetcher');
   }
 
   /** 定时清理：空闲超过 60 秒就关闭共享浏览器 */

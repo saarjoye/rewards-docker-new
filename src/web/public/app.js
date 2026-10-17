@@ -720,6 +720,9 @@ function initUIEvents() {
       if (res.success) {
         alert(`🎉 ${res.message}`);
         fetchStatus();
+      } else if (res.skipped) {
+        // 明确告诉用户是谁占用了账号上下文锁
+        alert(`⏳ 暂时无法领取\n\n${res.message}\n\n提示：通常是一次任务/同步/领取正在进行中，等它结束后再试。`);
       } else {
         alert(`领取失败: ${res.message}`);
       }
