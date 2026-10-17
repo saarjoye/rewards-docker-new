@@ -212,3 +212,22 @@ test('compareIdentityEvidence：CID 一致时为 match 并携带账号信息，C
   assert.match(resMismatch.identityMessage, /58f47b6d3bea1c91/i);
   assert.match(resMismatch.identityMessage, /23490617d0e5bebf/i);
 });
+
+test('compareIdentityEvidence：epuid 与 ruid 大小写不同时，仍然判定为 match，不得误判为 mismatch', () => {
+  const cookie = {
+    valid: true,
+    userCid: '58f47b6d3bea1c91',
+    userName: 'Octavia',
+    userEmail: 'joanoctavian2930@hotmail.com',
+    epuid: 'dz9oamqc00dexpgpja1hltpbzimugqwnb1haipj3chrtygmud3fvixikeeqndoryuein6ridan7ezmbc3mpqusnlypmuqxby5jr2x5igg3c'
+  };
+  const token = {
+    valid: true,
+    userId: '58f47b6d3bea1c91',
+    epuid: 'dZ9OAmqC00dEXpGpjA1hLtPBziMuGqwNB1HAipJ3CHrtyGmuD3FVIxiKeEQNdORyuEIN6RIDaN7eZmBc3MpQusNLyPMuQXby5JR2X5IGG3c',
+    balance: 4073
+  };
+  const res = compareIdentityEvidence(cookie, token);
+  assert.equal(res.identityMatch, 'match');
+  assert.equal(res.sameAccount, true);
+});

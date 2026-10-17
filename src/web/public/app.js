@@ -2954,8 +2954,10 @@ async function runSingleAccountDiagnosis(accountId) {
     } else if (cookie.valid) {
       pillCookie.className = 'diag-status-pill pill-ok';
       pillCookie.innerText = '已登录正常';
+      const cAccount = [cookie.userEmail, cookie.userName].filter(Boolean).join(' / ') || (cookie.userCid ? ('ID: ' + cookie.userCid) : '');
       detailCookie.innerHTML = `
         <div>状态：✅ 身份认证有效，可执行 PC 搜索、每日活动集与桌面专属任务</div>
+        ${cAccount ? `<div style="margin-top:6px; padding:6px 10px; border-radius:8px; background:var(--card-inner); border:1px solid var(--border-color); font-size:12.5px;">👤 <strong>Cookie 登录账号:</strong> <span style="color:#38BDF8; font-weight:600;">${escapeHtml(cAccount)}</span> ${cookie.userCid ? `<span style="font-size:11.5px; opacity:0.8;">(ID: ${escapeHtml(cookie.userCid)})</span>` : ''}</div>` : ''}
         <div style="margin-top:4px; color:#E2E8F0;">${escapeHtml(cookie.message || '')}</div>
       `;
     } else {
@@ -2973,8 +2975,10 @@ async function runSingleAccountDiagnosis(accountId) {
     if (token.valid) {
       pillToken.className = 'diag-status-pill pill-ok';
       pillToken.innerText = '已授权正常';
+      const tAccount = token.userId ? ('ID: ' + token.userId) : '';
       detailToken.innerHTML = `
         <div>状态：✅ OAuth Token 活跃，可执行 App 静默签到与新闻资讯阅读 (30分)</div>
+        ${tAccount ? `<div style="margin-top:6px; padding:6px 10px; border-radius:8px; background:var(--card-inner); border:1px solid var(--border-color); font-size:12.5px;">📱 <strong>OAuth 绑定账号:</strong> <span style="color:#34D399; font-weight:600;">${escapeHtml(tAccount)}</span> ${token.balance != null ? `<span style="font-size:11.5px; opacity:0.8;">(积分: ${token.balance})</span>` : ''}</div>` : ''}
         <div style="margin-top:4px; color:#E2E8F0;">${escapeHtml(token.message || '')}</div>
       `;
     } else {

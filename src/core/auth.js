@@ -270,15 +270,15 @@ export function compareIdentityEvidence(left, right) {
 
   // 1. 提取 Cookie 侧关键标识
   const cookieCid = normalizeCid(left.userCid || getFirstEvidenceValue(left, 'cid') || getFirstEvidenceValue(left, 'user_id'));
-  const cookieRuid = normalizeRuid(getFirstEvidenceValue(left, 'ruid'));
-  const cookieEpuid = String(getFirstEvidenceValue(left, 'epuid') || '').trim();
+  const cookieRuid = normalizeRuid(getFirstEvidenceValue(left, 'ruid') || left.ruid);
+  const cookieEpuid = String(getFirstEvidenceValue(left, 'epuid') || left.epuid || '').trim().toLowerCase();
   const cookieEmail = String(left.userEmail || '').trim().toLowerCase();
   const cookieName = String(left.userName || '').trim();
 
   // 2. 提取 OAuth 侧关键标识
   const tokenCid = normalizeCid(right.userId || getFirstEvidenceValue(right, 'cid') || getFirstEvidenceValue(right, 'user_id'));
-  const tokenRuid = normalizeRuid(right.ruid || getFirstEvidenceValue(right, 'ruid'));
-  const tokenEpuid = String(right.epuid || getFirstEvidenceValue(right, 'epuid') || '').trim();
+  const tokenRuid = normalizeRuid(getFirstEvidenceValue(right, 'ruid') || right.ruid);
+  const tokenEpuid = String(getFirstEvidenceValue(right, 'epuid') || right.epuid || '').trim().toLowerCase();
 
   // 3. 冲突判定（mismatch）
   if (cookieCid && tokenCid && cookieCid !== tokenCid) {
@@ -476,7 +476,7 @@ export class AuthManager {
 
     // 检查有效期，如果刚刷过且没有强制要求，且已经有 accessToken，则直接复用
     const diffHours = (Date.now() - tokenTime) / (1000 * 60 * 60);
-    if (!force && acc.accessToken && diffHours < 12) {
+    if (!force && acc.accessToken && acc.oauthUserId && diffHours < 12) {
       this.accessToken = acc.accessToken;
       logger.setAccountContext(prevCtx);
       return true;
@@ -524,6 +524,7 @@ export class AuthManager {
           id: acc.id,
           accessToken: data.access_token,
           refreshToken: data.refresh_token,
+          oauthUserId: data.user_id ? String(data.user_id).trim() : (acc.oauthUserId || ''),
           tokenTime: Date.now()
         });
         logger.log('🟢', `账号 [${acc.name}] OAuth Token 续期刷新成功！`);
@@ -697,6 +698,23 @@ export class AuthManager {
       businessMessage = `身份有效，但业务页面暂时不可用: ${e.message}`;
     }
 
+    if (!balance && identityData) {
+      const flyoutBal = identityData?.flyoutResult?.userStatus?.availablePoints ?? identityData?.userInfo?.balance;
+      if (flyoutBal != null && Number.isFinite(Number(flyoutBal))) {
+        balance = Number(flyoutBal);
+      }
+    }
+    if (pcProgress === 0 && pcMax === 60 && identityData) {
+      const pcSearch = identityData?.flyoutResult?.userStatus?.counters?.PCSearch?.[0];
+      if (pcSearch) {
+        pcProgress = Number(pcSearch.pointProgress || 0);
+        pcMax = Number(pcSearch.pointProgressMax || 60);
+      }
+    }
+    if (identityData?.userInfo?.isRewardsUser && businessMessage.includes('Cookie 登录态可能已失效')) {
+      businessMessage = '';
+    }
+
     const wlsInfoFinal = parseWlsInfo(cookie);
     let bingEmail = null;
     try {
@@ -734,6 +752,7 @@ export class AuthManager {
     }
 
     const tokenOk = await this.refreshToken(false, accountId);
+    const refreshedAcc = configManager.findAccount(accountId) || configManager.resolveAccount(accountId);
     const token = this.getAccessToken(accountId);
     if (!tokenOk || !token) {
       return { valid: false, message: 'Refresh Token 已过期或失效，请重新授权' };
@@ -755,7 +774,7 @@ export class AuthManager {
 
       const data = typeof res === 'string' ? JSON.parse(res) : res;
       const tokenIdentity = createIdentityEvidence(data?.response || {});
-      const userId = acc?.oauthUserId || '';
+      const userId = refreshedAcc?.oauthUserId || acc?.oauthUserId || '';
       const ruid = data?.response?.profile?.ruid || '';
       const epuid = data?.response?.profile?.attributes?.epuid || '';
       if (data?.response) {
@@ -770,10 +789,10 @@ export class AuthManager {
           ruid,
           epuid,
           readProgress: readProg,
-          message: `移动端已登录 | 积分: ${balance} | 阅读进度: ${readProg}`
+          message: `移动端已登录${userId ? ` (账号ID: ${userId})` : ''} | 积分: ${balance} | 阅读进度: ${readProg}`
         }, tokenIdentity);
       }
-      return attachIdentityEvidence({ valid: true, userId, ruid, epuid, message: '移动端 Token 有效' }, tokenIdentity);
+      return attachIdentityEvidence({ valid: true, userId, ruid, epuid, message: `移动端 Token 有效${userId ? ` (账号ID: ${userId})` : ''}` }, tokenIdentity);
     } catch (e) {
       return { valid: false, message: `移动端 DAPI 接口验证失败: ${e.message}` };
     }
