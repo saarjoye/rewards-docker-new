@@ -1131,39 +1131,56 @@ class BrowserManager extends EventEmitter {
         logger.log('🟡', `未找到可点击的领取入口（页面显示 ${pts} 分待领）`, '', accName);
       }
 
-      // 处理确认弹窗（最多 5 轮）
-      for (let round = 0; round < 5; round++) {
-        await page.waitForTimeout(2500);
-        const confirmCandidates = [
-          page.getByRole('button', { name: /领取积分|确认领取|领取/ }).last(),
-          page.locator('div[role="dialog"] button').last(),
-          page.locator('button').filter({ hasText: /领取积分|确认/ }).last()
-        ];
-        let confirmed = false;
-        for (const locator of confirmCandidates) {
-          try {
-            if ((await locator.count()) > 0 && await locator.isVisible().catch(() => false)) {
-              await locator.click({ timeout: 6000 });
-              confirmed = true;
-              claimed = pts;
-              logger.log('🎉', `账号 [${accName}] 领取成功 +${claimed} 分`, '', accName);
-              break;
-            }
-          } catch {}
-        }
-        if (!confirmed) break;
+      // 处理确认弹窗：只点一次，之后只等待页面刷新。
+      // 旧实现循环 5 轮、每轮都点一次并打印「领取成功」，导致重复领取与日志刷屏。
+      await page.waitForTimeout(2500);
+      const confirmCandidates = [
+        page.locator('div[role="dialog"] button').last(),
+        page.getByRole('button', { name: /领取积分|确认领取|确认/ }).last(),
+        page.locator('button').filter({ hasText: /领取积分|确认/ }).last()
+      ];
+      let confirmClicked = false;
+      for (const locator of confirmCandidates) {
+        try {
+          if ((await locator.count()) > 0 && await locator.isVisible().catch(() => false)) {
+            await locator.click({ timeout: 6000 });
+            confirmClicked = true;
+            logger.log('✅', `已点击确认领取`, '', accName);
+            break;
+          }
+        } catch {}
+      }
+      if (!confirmClicked) {
+        logger.log('🟡', '未出现确认弹窗（可能已直接领取）', '', accName);
       }
 
-      // 领取后复核页面上的「可领取」是否归零
-      await page.waitForTimeout(3000);
-      const afterText = await page.content().catch(() => '');
-      if (afterText) {
-        const m = String(afterText).match(/"children"\s*:\s*"可领取"[\s\S]{0,1200}?"children"\s*:\s*"?(\d[\d,]*)/);
-        if (m) {
-          const remaining = parseInt(m[1].replace(/,/g, ''), 10) || 0;
-          logger.log('📊', `领取后页面显示剩余待领: ${remaining}`, '', accName);
-          if (remaining === 0) claimed = pts;
-        }
+      // 唯一的成功判据：页面上的「可领取」归零
+      await page.waitForTimeout(4000);
+      let remaining = null;
+      try {
+        const text = await page.evaluate(() => {
+          const nodes = [...document.querySelectorAll('p')];
+          const label = nodes.find(n => (n.textContent || '').trim() === '可领取');
+          if (!label) return null;
+          let box = label;
+          for (let i = 0; i < 5 && box; i++) {
+            const head = box.querySelector && box.querySelector('p.text-pageHeader');
+            if (head) return head.textContent || null;
+            box = box.parentElement;
+          }
+          return null;
+        });
+        const m = String(text || '').match(/(\d[\d,]*)/);
+        if (m) remaining = parseInt(m[1].replace(/,/g, ''), 10);
+      } catch {}
+
+      if (remaining === 0) {
+        claimed = pts;
+        logger.log('🎉', `领取成功 +${pts} 分（页面已归零）`, '', accName);
+      } else if (remaining !== null) {
+        logger.log('🟡', `领取后仍显示 ${remaining} 分待领，未计入`, '', accName);
+      } else {
+        logger.log('🟡', `未能读取领取后的状态，按未领取处理`, '', accName);
       }
 
       await this.commitBrowserSession();

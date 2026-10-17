@@ -32,7 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.8.5';
+const CURRENT_VERSION = '1.8.6';
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
@@ -848,6 +848,9 @@ export function createServer() {
       res.status(500).json({ success: false, message: e.message });
     }
   });
+
+  // 领取互斥：避免重复点击 / 并发请求对同一账号反复领取
+  let claimPointsInFlight = null;
 
   // 领取 Dashboard 额外待领积分 (点击卡片触发)
   app.post('/api/tasks/claim-points', async (req, res) => {
