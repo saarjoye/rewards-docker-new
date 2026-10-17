@@ -402,6 +402,38 @@ class BrowserManager extends EventEmitter {
    * 浏览器进程本身没泄漏，但「一个超长会话」会持续抬高水位。
    * 中途换页能把绝大部分渲染内存还给系统，同时 Cookie/localStorage 都在 context 上，不受影响。
    */
+  /**
+   * 在「当前已打开的浏览器上下文」里读取官网真实进度。
+   *
+   * 为什么需要它：搜索流程持有 browserSlotLock，而 getRewardsInfo()
+   * 需要再启动一个 Chromium 才能读 /earn，两者会互相等待形成死锁
+   * （表现为一直停在「第 1/N 轮 按下 Enter」，倒计时也不出现）。
+   * 这里复用现有 context 发请求，不申请新锁。
+   */
+  async probeProgressInContext(context, acc) {
+    if (!context) return null;
+    let page = null;
+    try {
+      page = await context.newPage();
+      await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2000);
+      const html = await page.content();
+      if (!html || html.length < 50000) return null;
+      const text = String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+      // 优先用「必应搜索 x/y」这种进度行
+      const m = text.match(/必应搜索[\s\S]{0,80}?(\d{1,3})\s*\/\s*(\d{1,3})/);
+      if (m) {
+        const progress = parseInt(m[1], 10);
+        if (Number.isFinite(progress)) return progress;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      if (page) await page.close().catch(() => {});
+    }
+  }
+
   async recyclePage(context, accName = '当前账号') {
     try {
       if (this.page) {
@@ -757,9 +789,16 @@ class BrowserManager extends EventEmitter {
         // 停滞保护：探测官网真实进度，连续 N 次不涨就停手
         if (typeof probeProgress === 'function' && i < totalSearches - 1) {
           let official = null;
+          // 优先复用当前浏览器上下文，避免与持有中的 browserSlotLock 死锁
           try {
-            official = await probeProgress();
+            official = await this.probeProgressInContext(context, acc);
           } catch {}
+          if (official === null) {
+            try {
+              official = await probeProgress();
+            } catch {}
+          }
+          logger.log('📊', `第 ${completed}/${totalSearches} 轮后官网进度: ${official === null ? '未取到' : official + ' 分'}`, '', accName);
           const result = stagnation.observe(official);
           if (result.stagnant) {
             stoppedByStagnation = true;
