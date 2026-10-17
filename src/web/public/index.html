@@ -631,20 +631,24 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">必应网页端 Cookie (针对当前选中的账号)</label>
+            <label class="form-label">必应网页端 Cookie <span style="color:#F87171;font-weight:700;">（必须使用 JSON 格式）</span></label>
             <div class="input-with-btn">
               <div class="secret-field">
-              <textarea id="cfg-cookie" class="form-textarea" rows="4" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Cookie：优先用「Cookie-Editor」等扩展导出的 JSON（含 domain，跨域登录必需）；也兼容 cn.bing.com 的 Header String"></textarea>
+              <textarea id="cfg-cookie" class="form-textarea" rows="4" autocomplete="off" spellcheck="false" placeholder='粘贴 Cookie-Editor 导出的 JSON 数组，形如：[{"name":"SRCHD","value":"...","domain":".bing.com"}, ...]'></textarea>
                 <button type="button" class="secret-toggle" data-target="cfg-cookie" title="显示 / 隐藏 Cookie">👁</button>
               </div>
               <button type="button" id="btn-test-modal-cookie" class="btn btn-secondary btn-sm" title="测试该 Cookie 有效性与余额">测试有效性</button>
               <button type="button" id="btn-clear-modal-cookie" class="btn btn-danger-soft btn-sm" title="清空该账号保存的 Cookie">清空</button>
             </div>
-            <small class="form-hint" id="cfg-cookie-hint">
-          推荐：用 Cookie-Editor 在 <b>rewards.bing.com</b> 页面「导出为 JSON」后整段粘贴（必须包含 <code>.live.com</code>、<code>rewards.bing.com</code> 域的 Cookie，否则会被重定向到登录页）。<br>
-          兼容：cn.bing.com 的 Header String（必须含 <code>_U</code>）。<br>
-          校验方式：配置中心 → 账号体检；若日志出现「浏览器落地: login.live.com」说明 Cookie 不完整。
-        </small>
+            <div class="form-hint" id="cfg-cookie-hint" style="line-height:1.7;">
+              <div style="color:#F87171;font-weight:700;margin-bottom:6px;">⚠️ 必须使用 JSON 格式（旧的 name=value; 字符串已不足以登录）</div>
+              <div><b>步骤：</b></div>
+              <div>1. Chrome 打开 <code>https://rewards.bing.com/earn</code>，确认已登录、能看到任务卡片</div>
+              <div>2. 打开扩展 <b>Cookie-Editor</b> → 点 <b>Export</b> → 选择 <b>JSON</b></div>
+              <div>3. 复制整段 <code>[{"name":...}]</code> 粘贴到上面输入框</div>
+              <div style="margin-top:6px;">导出内容必须同时包含 <code>.live.com</code> 与 <code>rewards.bing.com</code> 域，否则会被重定向到登录页。</div>
+              <div style="margin-top:6px;">校验：点「测试有效性」或「账号体检」；若日志出现 <code>浏览器落地: login.live.com</code>，说明导出不完整。</div>
+            </div>
             <div id="cfg-cookie-test-result" style="margin-top: 6px; font-size: 12px;"></div>
           </div>
 

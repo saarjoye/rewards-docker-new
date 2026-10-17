@@ -1226,9 +1226,10 @@ async function handleQuickAddAccount() {
     }).then(r => r.json());
 
     if (res.success) {
-      const msg = isEditing
+      let msg = isEditing
         ? '账号配置已成功更新！'
         : (res.tokenExchanged ? '账号添加成功，且移动端 Token 已自动换取就绪！' : '账号添加成功！');
+      if (res.warning) msg += `\n\n⚠️ ${res.warning}`;
       closeModal('account-quick-add-modal');
       // 清空表单
       document.getElementById('quick-add-name').value = '';
@@ -2619,6 +2620,9 @@ async function saveGuideSettings() {
     }).then(r => r.json());
     if (accRes.success && accRes.data?.id) {
       selectedAccountId = accRes.data.id;
+    }
+    if (accRes.success && accRes.warning) {
+      alert(`⚠️ ${accRes.warning}`);
     }
   } catch (e) {
     console.error('保存向导账号失败:', e);

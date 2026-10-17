@@ -32,7 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.8.1';
+const CURRENT_VERSION = '1.8.2';
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
@@ -781,7 +781,13 @@ export function createServer() {
           logger.log('🟡', `新建账号 [${saved.name}] 自动换取 Token 提示: ${eToken.message}`);
         }
       }
-      res.json({ success: true, data: saved, tokenExchanged });
+      const cookieFormatWarning = (() => {
+    const raw = String(req.body?.cookie || '').trim();
+    if (!raw) return null;
+    if (raw.startsWith('[')) return null;
+    return '当前保存的是旧版 Header String（只有 bing.com 域），rewards.bing.com 新版登录需要 Cookie-Editor 导出的 JSON（含 .live.com 与 rewards.bing.com 域），否则同步时会一直回退到登录页。';
+  })();
+      res.json({ success: true, data: saved, tokenExchanged, warning: cookieFormatWarning });
     } catch (e) {
       res.status(400).json({ success: false, message: e.message });
     }
