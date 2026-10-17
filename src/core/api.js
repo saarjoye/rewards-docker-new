@@ -1088,13 +1088,23 @@ export class RewardsApi {
       idx = normalized.indexOf(needle, idx + needle.length);
     }
     const info = await this.getRewardsInfo(1).catch(() => null);
+    // 列出页面里出现的所有「疑似卡片容器」字段名，便于确认账号用了哪一组字段
+    const cardKeys = ['activityCards', 'dailySetPromotions', 'promotionalItems', 'morePromotions', 'punchCards', 'highValueActionPromotions', 'exploreOnBingPromotions'];
+    const cardFieldPresence = {};
+    for (const key of cardKeys) {
+      const idx = normalized.indexOf('"' + key + '"');
+      cardFieldPresence[key] = idx !== -1;
+    }
+    const activityStatus = await this.getActivityCardStatus().catch(() => null);
     return {
       found: snippets.length > 0,
       count: snippets.length,
       snippets,
       parsedTodayPoints: info?.todayPoints ?? null,
       parsedSource: info?.todayPointsSource ?? null,
-      flyoutDailyPoint: info?.flyoutTodayPoints ?? null,
+      claimablePoints: info?.claimablePoints ?? null,
+      cardFieldPresence,
+      activityStatus,
       htmlLength: String(html).length
     };
   }
@@ -1112,7 +1122,15 @@ export class RewardsApi {
       // 就永远匹配不到，于是把「其实读到了、只是没有卡片」误报成「未能读取官网状态」。
       // 这里先拼回 Flight 文本，再用「字符串感知 + 括号配平」的方式抽取数组，两种形态都能识别。
       const text = normalizeFlightFragment(concatFlightChunks(html));
-      const raw = extractJsonArray(text, 'activityCards');
+      // 不同页面版本/账号的实验分组会用不同字段承载「日常任务」。
+      // activityCards 是当前主字段，其余是同一份数据的历史/实验字段名。
+      const CARD_KEYS = ['activityCards', 'dailySetPromotions', 'promotionalItems', 'morePromotions', 'punchCards'];
+      let raw = null;
+      let usedKey = null;
+      for (const key of CARD_KEYS) {
+        const found = extractJsonArray(text, key);
+        if (found) { raw = found; usedKey = key; break; }
+      }
       if (!raw) {
         // 不能用「页面里出现『登录』字样」来判断 Cookie 失效：
         // /earn 页面本身就包含登录/账号入口文案，实测会把正常页面误报成 not-signed-in。
@@ -1136,8 +1154,8 @@ export class RewardsApi {
       if (!Array.isArray(cards)) {
         return { total: 0, completed: 0, readable: false, reason: 'not-an-array' };
       }
-      const completed = cards.filter(c => c && c.isCompleted === true).length;
-      return { total: cards.length, completed, readable: true, reason: null };
+      const completed = cards.filter(c => c && (c.isCompleted === true || c.complete === true)).length;
+      return { total: cards.length, completed, readable: true, reason: null, usedKey };
     } catch {
       return { total: 0, completed: 0, readable: false, reason: 'request-failed' };
     }

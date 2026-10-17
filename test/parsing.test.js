@@ -118,7 +118,7 @@ test('getRewardsInfo 解析必应应用连签真实状态', async () => {
 test('getActivityCardStatus 统计 activityCards 完成情况', async () => {
   await withStubbedNetwork(EARN_FIXTURE, async () => {
     const status = await rewardsApi.getActivityCardStatus();
-    assert.deepEqual(status, { total: 2, completed: 1, readable: true, reason: null });
+    assert.deepEqual(status, { total: 2, completed: 1, readable: true, reason: null, usedKey: 'activityCards' });
   });
 });
 
@@ -283,5 +283,16 @@ test('可领取额外积分支持数值型 children', async () => {
   await withRoutedNetwork({ earn, dashboard: dash, flyout: '' }, async () => {
     const info = await rewardsApi.getRewardsInfo(1);
     assert.equal(info.claimablePoints, 3, '官网显示可领取 3 分时必须解析为 3');
+  });
+});
+
+test('activityCards 缺失时用其他已知字段兜底（不同账号/实验分组）', async () => {
+  const fixture = '<script>self.__next_f.push([1,"x:\\"promotionalItems\\":[{\\"isCompleted\\":false,\\"offerId\\":\\"A\\"},{\\"isCompleted\\":true,\\"offerId\\":\\"B\\"}]"])</script>';
+  await withStubbedNetwork(fixture, async () => {
+    const status = await rewardsApi.getActivityCardStatus();
+    assert.equal(status.readable, true);
+    assert.equal(status.usedKey, 'promotionalItems');
+    assert.equal(status.total, 2);
+    assert.equal(status.completed, 1);
   });
 });
