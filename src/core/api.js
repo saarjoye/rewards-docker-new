@@ -134,6 +134,34 @@ export class RewardsApi {
   }
 
   /**
+   * 从渲染后的 HTML 里，按「标签文本 → 最近的 text-pageHeader 数值」取值。
+   *
+   * 实测官网三个关键卡片都是这个结构（浏览器渲染后的明文 DOM）：
+   *   <p class="text-labelControl">今日积分</p> ... <p class="text-pageHeader">145</p>
+   *   <p class="text-labelControl">每日连续打卡</p> ... <p class="text-pageHeader">123</p>
+   *   <p class="text-labelControl">可领取</p> ... <p class="text-pageHeader">3</p>
+   *
+   * 返回首个匹配到的数字；找不到返回 null。
+   */
+  parseLabeledHeaderValue(html, label, options = {}) {
+    if (!html || !label) return null;
+    const source = String(html);
+    const maxSpan = options.maxSpan || 1500;
+    let from = 0;
+    while (true) {
+      const idx = source.indexOf(label, from);
+      if (idx === -1) return null;
+      const segment = source.slice(idx, idx + maxSpan);
+      const m = segment.match(/text-pageHeader[^>]*>\s*\+?(\d[\d,]*)/);
+      if (m) {
+        const n = parseInt(m[1].replace(/,/g, ''), 10);
+        return Number.isFinite(n) ? n : null;
+      }
+      from = idx + label.length;
+    }
+  }
+
+  /**
    * 从 earn 与 dashboard 页面精准提取各 partner（bing / dailyset / bingapp）的连签模型。
    * 通过括号平衡解析独立的 streak JSON 对象，彻底避免旧版窗口正则向前越界抓到其他 partner（如 edge 的 0/7）。
    */
@@ -542,18 +570,20 @@ export class RewardsApi {
         // 在官网上看到的数字。cn.bing.com panelflyout 的 DailyPoint 是另一个计数器，
         // 实测会出现「官网 145 / flyout 498」的口径差（498 恰好等于余额差），
         // 因此 flyout 只作为页面解析失败时的兜底，不能再盖过页面值。
-        const normalizedEarn = normalizeFlightFragment(clean);
-        let todayPoints = null;
-        let todayPointsSource = null;
+        // 最优先：浏览器渲染后的 HTML（<p class="text-pageHeader">145</p>）
+        let todayPoints = this.parseLabeledHeaderValue(clean, '今日积分');
+        let todayPointsSource = todayPoints === null ? null : 'earn-page-dom';
 
-        // 策略 1（最准确）：React Flight 里「今日积分」+ text-pageHeader 的固定搭配
+        const normalizedEarn = normalizeFlightFragment(clean);
+
+        // 策略 1：React Flight 里「今日积分」+ text-pageHeader 的固定搭配
         const headerMatch = normalizedEarn.match(/"children"\s*:\s*"今日积分"[\s\S]{0,2000}?"className"\s*:\s*"text-pageHeader"[\s\S]{0,200}?"children"\s*:\s*"?\+?([\d,]+)"?/)
           || normalizedEarn.match(/今日积分<\/[^>]+>[\s\S]{0,1200}?class="text-pageHeader"[^>]*>\+?([\d,]+)</);
-        if (headerMatch) {
+        if (todayPoints === null && headerMatch) {
           const n = parseInt(headerMatch[1].replace(/,/g, ''), 10);
           if (Number.isFinite(n)) {
             todayPoints = n;
-            todayPointsSource = 'earn-page';
+            todayPointsSource = 'earn-page-flight';
           }
         }
 
@@ -670,12 +700,12 @@ export class RewardsApi {
 
         // 平台待领取额外积分（"可领取"卡片）。
         // 同样要兼容 React Flight 把数字序列化为数值而非字符串的情况。
-        let claimablePoints = 0;
+        let claimablePoints = this.parseLabeledHeaderValue(cleanDash, '可领取') ?? 0;
         const normalizedDash = normalizeFlightFragment(cleanDash);
         const claimMatch = normalizedDash.match(/"children"\s*:\s*"可领取"[\s\S]{0,1200}?"children"\s*:\s*"?\+?([\d,]+)"?/)
           || normalizedDash.match(/可领取<\/p>[\s\S]*?class="text-pageHeader"[^>]*>\+?([\d,]+)</)
           || normalizedDash.match(/alt="可领取"[^>]*>[\s\S]{0,300}?(\d[\d,]*)/);
-        if (claimMatch) {
+        if (claimablePoints === 0 && claimMatch) {
           claimablePoints = parseInt(claimMatch[1].replace(/,/g, ''), 10) || 0;
         }
 
@@ -1701,13 +1731,12 @@ export class RewardsApi {
 
       // 官网是 Next.js RSC 页面，正文数字在 Flight 数据流里，
       // 直接剥 HTML 标签拿不到「每日连续打卡 123」这种相邻文本。
+      let streakDays = this.parseLabeledHeaderValue(String(html), '每日连续打卡') ?? 0;
       const flight = normalizeFlightFragment(concatFlightChunks(String(html)));
-      let streakDays = 0;
-      const streakMatch = flight.match(/"children"\s*:\s*"每日连续打卡"[\s\S]{0,1500}?"children"\s*:\s*"?\+?(\d+)"?/)
-        || flight.match(/每日连续打卡[\s\S]{0,300}?(\d+)/)
-        || String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').match(/每日连续打卡\s*(\d+)/);
-      if (streakMatch) {
-        streakDays = parseInt(streakMatch[1], 10) || 0;
+      if (streakDays === 0) {
+        const streakMatch = flight.match(/"children"\s*:\s*"每日连续打卡"[\s\S]{0,1500}?"children"\s*:\s*"?\+?(\d+)"?/)
+          || String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').match(/每日连续打卡\s*(\d+)/);
+        if (streakMatch) streakDays = parseInt(streakMatch[1], 10) || 0;
       }
       const text = String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 

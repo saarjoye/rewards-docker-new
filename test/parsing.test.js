@@ -239,7 +239,7 @@ test('earn 页面与 flyout 数值不一致时，以页面为准（官网 145 / 
   await withRoutedNetwork({ earn: page, dashboard: '', flyout: flyoutFixture }, async () => {
     const info = await rewardsApi.getRewardsInfo(1);
     assert.equal(info.todayPoints, 145, '必须采用官网页面值，不能被 flyout 的 498 覆盖');
-    assert.equal(info.todayPointsSource, 'earn-page');
+    assert.match(info.todayPointsSource, /^earn-page/);
   });
 });
 
@@ -250,7 +250,7 @@ test('今日积分窗口解析：children 层级变化仍能取到数字', async
   await withRoutedNetwork({ earn: page, dashboard: '', flyout }, async () => {
     const info = await rewardsApi.getRewardsInfo(1);
     assert.equal(info.todayPoints, 145, '必须取到页面里的 145，而不是 flyout 的 513');
-    assert.equal(info.todayPointsSource, 'earn-page');
+    assert.match(info.todayPointsSource, /^earn-page/);
   });
 });
 
@@ -295,4 +295,18 @@ test('activityCards 缺失时用其他已知字段兜底（不同账号/实验�
     assert.equal(status.total, 2);
     assert.equal(status.completed, 1);
   });
+});
+
+test('渲染后 DOM：标签 + text-pageHeader 结构能取到今日积分/连签/可领取', () => {
+  const earn = '<p class="text-labelControl">今日积分</p><img alt="今日积分"><div class="flex"><p class="text-pageHeader">145</p></div>' +
+               '<p class="text-labelControl">每日连续打卡</p><img alt="每日连续打卡"><div class="flex"><p class="text-pageHeader">123</p></div>';
+  const dash = '<p class="text-labelControl">可领取</p><img alt="可领取"><div class="flex"><p class="text-pageHeader">3</p></div>';
+  assert.equal(rewardsApi.parseLabeledHeaderValue(earn, '今日积分'), 145);
+  assert.equal(rewardsApi.parseLabeledHeaderValue(earn, '每日连续打卡'), 123);
+  assert.equal(rewardsApi.parseLabeledHeaderValue(dash, '可领取'), 3);
+});
+
+test('渲染后 DOM：千分位与「天」后缀都能正确取值', () => {
+  assert.equal(rewardsApi.parseLabeledHeaderValue('<p class="text-labelControl">可领取</p><p class="text-pageHeader">1,234</p>', '可领取'), 1234);
+  assert.equal(rewardsApi.parseLabeledHeaderValue('<p class="text-labelControl">每日连续打卡</p><p class="text-pageHeader">21 天</p>', '每日连续打卡'), 21);
 });
