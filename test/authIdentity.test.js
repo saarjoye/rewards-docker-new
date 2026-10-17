@@ -170,3 +170,45 @@ test('命名的诊断字段可以正常落盘并保留身份结论', () => {
   assert.equal(diagnosis.sameAccount, false);
   assert.equal(diagnosis.matchMethod, 'identity');
 });
+test('parseWlsInfo 能正确提取 WLS Cookie 中的 CID 与解码用户名', async () => {
+  const { parseWlsInfo } = await import('../src/core/auth.js');
+  const info1 = parseWlsInfo('WLS=C=58f47b6d3bea1c91&N=Octavia');
+  assert.equal(info1.cid, '58f47b6d3bea1c91');
+  assert.equal(info1.name, 'Octavia');
+
+  const info2 = parseWlsInfo('WLS=C=00000000-0000-0000-2349-0617d0e5bebf&N=%e5%a3%b0%e5%bc%ba+%e5%88%98');
+  assert.equal(info2.cid, '23490617d0e5bebf');
+  assert.equal(info2.name, '声强 刘');
+});
+
+test('compareIdentityEvidence：CID 一致时为 match 并携带账号信息，CID 冲突时为 mismatch 并阻止通过', () => {
+  const cookieMatched = {
+    valid: true,
+    userCid: '58f47b6d3bea1c91',
+    userName: 'Octavia',
+    userEmail: 'joanoctavian2930@hotmail.com'
+  };
+  const tokenMatched = {
+    valid: true,
+    userId: '58f47b6d3bea1c91',
+    balance: 4061
+  };
+  const tokenConflict = {
+    valid: true,
+    userId: '23490617d0e5bebf',
+    balance: 13555
+  };
+
+  const resMatch = compareIdentityEvidence(cookieMatched, tokenMatched);
+  assert.equal(resMatch.identityMatch, 'match');
+  assert.equal(resMatch.sameAccount, true);
+  assert.match(resMatch.identityMessage, /joanoctavian2930@hotmail.com/i);
+  assert.match(resMatch.identityMessage, /Octavia/i);
+
+  const resMismatch = compareIdentityEvidence(cookieMatched, tokenConflict);
+  assert.equal(resMismatch.identityMatch, 'mismatch');
+  assert.equal(resMismatch.sameAccount, false);
+  assert.match(resMismatch.identityMessage, /账号不一致/);
+  assert.match(resMismatch.identityMessage, /58f47b6d3bea1c91/i);
+  assert.match(resMismatch.identityMessage, /23490617d0e5bebf/i);
+});

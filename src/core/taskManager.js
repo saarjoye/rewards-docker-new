@@ -826,6 +826,13 @@ export class TaskManager {
 
     logger.log('👤', `>>> 开始执行账号 [${accountName}] 的自动化打卡任务 <<<`, accountName);
 
+    // 安全门禁：检查网页端 Cookie 与移动端 Token 身份是否冲突，严防跨账号串号
+    const diag = accStats.authDiagnosis || accCfg.authDiagnosis;
+    if (diag && (diag.identityMatch === 'mismatch' || diag.sameAccount === false)) {
+      logger.log('🛑', `账号 [${accountName}] 网页 Cookie 与移动端 Token 属于不同微软账号（${diag.identityMessage || '身份冲突'}），已自动阻止执行以防串号与封号！请在配置中心重新配置为同一账号。`, '', accountName);
+      return;
+    }
+
     // 1. 运行前先从官方同步一次真实进度（确保增量起点100%准确）
     await this.syncAccountOfficialStatus(accCfg, { owned: true });
 

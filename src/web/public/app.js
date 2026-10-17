@@ -546,7 +546,8 @@ function initUIEvents() {
         guideDraftAccount.accessToken = res.data.accessToken;
         guideDraftAccount.refreshToken = res.data.refreshToken;
         guideDraftAccount.tokenTime = Date.now();
-        resultDiv.innerHTML = '<span style="color:#34D399;">✅ Token 换取成功！已绑定至新账号草稿</span>';
+        const accTip = res.data?.accountInfo ? ` (${escapeHtml(res.data.accountInfo)})` : (res.data?.userId ? ` (账号ID: ${escapeHtml(res.data.userId)})` : '');
+        resultDiv.innerHTML = `<span style="color:#34D399;">✅ Token 换取成功！已绑定至新账号草稿${accTip}</span>`;
       } else {
         resultDiv.innerHTML = `<span style="color:#EF4444;">❌ 换取失败: ${escapeHtml(res.message)}</span>`;
       }
@@ -638,7 +639,8 @@ function initUIEvents() {
       body: JSON.stringify({ urlOrCode: input, accountId: targetId })
     }).then(r => r.json());
     if (res.success) {
-      if (resDiv) resDiv.innerHTML = '<span style="color:#34D399;">✅ Token 换取并自动保存成功！</span>';
+      const accTip = res.data?.accountInfo ? ` (${escapeHtml(res.data.accountInfo)})` : (res.data?.userId ? ` (账号ID: ${escapeHtml(res.data.userId)})` : '');
+      if (resDiv) resDiv.innerHTML = `<span style="color:#34D399;">✅ Token 换取并自动保存成功！${accTip}</span>`;
       document.getElementById('cfg-refresh-token').value = '********';
       document.getElementById('cfg-authcode').placeholder = '已配置授权码（内容已隐藏）';
       document.getElementById('cfg-authcode').value = '';
@@ -2321,8 +2323,18 @@ function getIdentityMeta(data) {
 
 function identityInlineHtml(data) {
   const meta = getIdentityMeta(data);
+  const uName = data.userName || '';
+  const uEmail = data.userEmail || '';
+  const uDesc = [uEmail, uName].filter(Boolean).join(' / ');
+  let html = '';
+  if (uDesc && uDesc !== '微软用户') {
+    html += '<div style="margin-top:6px; padding:6px 10px; border-radius:8px; background:var(--card-inner); border:1px solid var(--border-color); font-size:12.5px;">👤 <strong>Cookie 登录账号:</strong> <span style="color:#38BDF8; font-weight:600;">' + escapeHtml(uDesc) + '</span></div>';
+  }
   const text = meta.message || meta.text;
-  return '<div style="margin-top:5px; color:' + meta.color + ';">' + meta.icon + ' ' + escapeHtml(text) + '</div>';
+  const bg = meta.identityMatch === 'match' ? 'rgba(52,211,153,0.1)' : (meta.identityMatch === 'mismatch' ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)');
+  const border = meta.identityMatch === 'match' ? 'rgba(52,211,153,0.3)' : (meta.identityMatch === 'mismatch' ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)');
+  html += '<div style="margin-top:6px; padding:6px 10px; border-radius:8px; background:' + bg + '; border:1px solid ' + border + '; color:' + meta.color + '; font-weight:600; font-size:12.5px;">' + meta.icon + ' ' + escapeHtml(text) + '</div>';
+  return html;
 }
 
 // 身份接口暂时不可用（HTTP 5xx / 网络异常）时只能显示「待确认」

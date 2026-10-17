@@ -22,6 +22,57 @@ const INVALID_IDENTITY_VALUES = new Set(['', 'null', 'null-null', 'undefined', '
 /**
  * 统一身份值格式。比较过程只在服务端内存中进行，绝不返回给前端。
  */
+
+function normalizeCid(cid) {
+  if (!cid) return '';
+  return String(cid).replace(/[^a-zA-Z0-9]/g, '').toLowerCase().replace(/^0+/, '');
+}
+
+function normalizeRuid(ruid) {
+  if (!ruid) return '';
+  const text = String(ruid).trim().toUpperCase();
+  return text.replace(/^(?:HK|USW|US|EU|SG|JP|AU|CN|IN|EA|CANARY)-/, '');
+}
+
+export function parseWlsInfo(cookie) {
+  if (!cookie) return { cid: '', name: '' };
+  const parsed = parseCookieInput(cookie, '.bing.com');
+  const wls = parsed?.cookies?.find(c => c.name === 'WLS');
+  if (!wls || !wls.value) return { cid: '', name: '' };
+  const val = String(wls.value);
+  const mC = val.match(/(?:^|[&?])C=([^&;]+)/i);
+  const mN = val.match(/(?:^|[&?])N=([^&;]+)/i);
+  let name = '';
+  if (mN) {
+    try {
+      name = decodeURIComponent(mN[1].replace(/\+/g, ' ')).trim();
+    } catch {
+      name = mN[1].trim();
+    }
+  }
+  const cid = mC ? normalizeCid(mC[1]) : '';
+  return { cid, name };
+}
+
+export async function fetchBingUserEmail(cookie) {
+  if (!cookie) return null;
+  const parsed = parseCookieInput(cookie, '.bing.com');
+  if (!parsed || !parsed.cookies.length) return null;
+  try {
+    const html = await networkClient.request({
+      url: 'https://cn.bing.com/',
+      headers: pcPageHeaders({
+        cookie: cookieHeaderFor(parsed, 'https://cn.bing.com/')
+      }),
+      timeout: 10000
+    });
+    const m = String(html).match(/"UserEmail"\s*:\s*"([^"]+@[^"]+)"/i);
+    return m ? m[1].toLowerCase().trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeIdentityValue(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === 'object' || typeof value === 'function' || typeof value === 'symbol') return null;
@@ -198,39 +249,90 @@ export function isCookieUserLoggedIn(raw) {
   return createIdentityEvidence(data).size > 0;
 }
 
-export function compareIdentityEvidence(left, right) {
-  const leftFields = getIdentityEvidence(left);
-  const rightFields = getIdentityEvidence(right);
-  const leftValues = new Set();
-  const rightValues = new Set();
-  if (leftFields?.forEach) leftFields.forEach(values => values.forEach(value => leftValues.add(value)));
-  if (rightFields?.forEach) rightFields.forEach(values => values.forEach(value => rightValues.add(value)));
+function getFirstEvidenceValue(obj, key) {
+  if (!obj) return null;
+  const ev = getIdentityEvidence(obj);
+  if (!ev) return null;
+  const set = ev.get(String(key).toLowerCase());
+  if (!set || !set.size) return null;
+  return [...set][0];
+}
 
-  if (!leftValues.size || !rightValues.size) {
+export function compareIdentityEvidence(left, right) {
+  if (!left || !right) {
     return {
       identityMatch: 'unknown',
       sameAccount: null,
       matchMethod: 'identity',
-      identityMessage: '暂时无法确认 Cookie 与 OAuth 是否为同一微软账号（接口没有返回可比较的身份字段）'
+      identityMessage: '缺少比对对象，暂时无法确认身份一致性'
     };
   }
 
-  for (const value of leftValues) {
-    if (rightValues.has(value)) {
-      return {
-        identityMatch: 'match',
-        sameAccount: true,
-        matchMethod: 'identity',
-        identityMessage: 'Cookie 与 OAuth Token 属于同一微软账号'
-      };
-    }
+  // 1. 提取 Cookie 侧关键标识
+  const cookieCid = normalizeCid(left.userCid || getFirstEvidenceValue(left, 'cid') || getFirstEvidenceValue(left, 'user_id'));
+  const cookieRuid = normalizeRuid(getFirstEvidenceValue(left, 'ruid'));
+  const cookieEpuid = String(getFirstEvidenceValue(left, 'epuid') || '').trim();
+  const cookieEmail = String(left.userEmail || '').trim().toLowerCase();
+  const cookieName = String(left.userName || '').trim();
+
+  // 2. 提取 OAuth 侧关键标识
+  const tokenCid = normalizeCid(right.userId || getFirstEvidenceValue(right, 'cid') || getFirstEvidenceValue(right, 'user_id'));
+  const tokenRuid = normalizeRuid(right.ruid || getFirstEvidenceValue(right, 'ruid'));
+  const tokenEpuid = String(right.epuid || getFirstEvidenceValue(right, 'epuid') || '').trim();
+
+  // 3. 冲突判定（mismatch）
+  if (cookieCid && tokenCid && cookieCid !== tokenCid) {
+    const cLabel = [cookieEmail, cookieName].filter(Boolean).join(' / ');
+    const cDesc = cLabel ? (cookieCid ? (cLabel + ' (ID: ' + cookieCid + ')') : cLabel) : ('ID: ' + cookieCid);
+    return {
+      identityMatch: 'mismatch',
+      sameAccount: false,
+      matchMethod: 'identity',
+      identityMessage: '账号不一致：网页端 Cookie 登录的是 ' + cDesc + '，但移动端 Token 属于账号 ID: ' + tokenCid + (right.balance !== undefined ? '（积分: ' + right.balance + '）' : '') + '！存在严重串号风险，禁止执行任务，请重新配置为同一账号。'
+    };
   }
 
+  if (cookieRuid && tokenRuid && cookieRuid !== tokenRuid) {
+    const cDesc = [cookieEmail, cookieName].filter(Boolean).join(' / ') || '网页端账号';
+    return {
+      identityMatch: 'mismatch',
+      sameAccount: false,
+      matchMethod: 'identity',
+      identityMessage: '账号不一致：网页端 Cookie 登录的是 ' + cDesc + '，但移动端 Token 属于另一个微软账号！请重新配置为同一账号。'
+    };
+  }
+
+  if (cookieEpuid && tokenEpuid && cookieEpuid !== tokenEpuid) {
+    const cDesc = [cookieEmail, cookieName].filter(Boolean).join(' / ') || '网页端账号';
+    return {
+      identityMatch: 'mismatch',
+      sameAccount: false,
+      matchMethod: 'identity',
+      identityMessage: '账号不一致：网页端 Cookie 与移动端 Token 属于不同账号公钥！请重新配置为同一账号。'
+    };
+  }
+
+  // 4. 一致判定（match）
+  const cidMatched = !!(cookieCid && tokenCid && cookieCid === tokenCid);
+  const ruidMatched = !!(cookieRuid && tokenRuid && cookieRuid === tokenRuid);
+  const epuidMatched = !!(cookieEpuid && tokenEpuid && cookieEpuid === tokenEpuid);
+
+  if (cidMatched || ruidMatched || epuidMatched) {
+    const accountLabel = [cookieEmail, cookieName].filter(Boolean).join(' / ') || (cookieCid ? ('ID: ' + cookieCid) : '');
+    return {
+      identityMatch: 'match',
+      sameAccount: true,
+      matchMethod: 'identity',
+      identityMessage: 'Cookie 与 OAuth Token 属于同一微软账号' + (accountLabel ? ' (' + accountLabel + ')' : '')
+    };
+  }
+
+  // 5. 无法确认（unknown）
   return {
-    identityMatch: 'mismatch',
-    sameAccount: false,
+    identityMatch: 'unknown',
+    sameAccount: null,
     matchMethod: 'identity',
-    identityMessage: 'Cookie 所属微软账号与 OAuth Token 不一致，存在串号风险，请重新导出同一账号的凭据'
+    identityMessage: '暂时无法确认 Cookie 与 OAuth 是否为同一账号（缺少可比对的唯一标识）'
   };
 }
 
@@ -318,6 +420,7 @@ export class AuthManager {
 
       if (data.access_token && data.refresh_token) {
         this.accessToken = data.access_token;
+        const userId = data.user_id ? String(data.user_id).trim() : '';
         configManager.upsertAccount({
           id: targetId,
           // 新账号（配置向导草稿）需要带上名称与序号，否则会生成名为「账号 N」的占位账号
@@ -325,14 +428,27 @@ export class AuthManager {
           authCodeUrl: codeOrUrl,
           accessToken: data.access_token,
           refreshToken: data.refresh_token,
+          oauthUserId: userId,
           tokenTime: Date.now()
         });
         logger.log('🟢', `账号 [${displayName}] OAuth Token 换取成功并已持久化保存！`);
+        let balance = null;
+        try {
+          const tStatus = await this.checkTokenStatus(targetId);
+          if (tStatus?.balance !== undefined) balance = tStatus.balance;
+        } catch {}
+        const accountInfo = [
+          userId ? '账号ID: ' + userId : '',
+          balance !== null ? '积分: ' + balance : ''
+        ].filter(Boolean).join(' | ');
         return {
           success: true,
           accountId: targetId,
           accessToken: data.access_token,
-          refreshToken: data.refresh_token
+          refreshToken: data.refresh_token,
+          userId,
+          balance,
+          accountInfo
         };
       }
       throw new Error('响应中未找到 access_token 或 refresh_token');
@@ -562,10 +678,9 @@ export class AuthManager {
         const streakMatch = clean.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').match(/每日连续打卡\s*(\d+)/);
         if (streakMatch) streakDays = parseInt(streakMatch[1], 10);
 
-        const nameMatch = cookie.match(/N=([^;]+)/);
-        if (nameMatch) {
-          try { userName = decodeURIComponent(nameMatch[1]); } catch {}
-        }
+        // 优先从 WLS Cookie 中解析用户名，避免 JSON 格式下正则跨行误匹配
+        const wlsInfo = parseWlsInfo(cookie);
+        if (wlsInfo.name) userName = wlsInfo.name;
 
         const stampMatch = clean.match(/"aria-label":"收集的印章"[^}]*?"aria-valuemax":(\d+)[^}]*?"aria-valuenow":(\d+)/)
           || clean.match(/aria-label="收集的印章"[^>]*?aria-valuemax="(\d+)"[^>]*?aria-valuenow="(\d+)"/);
@@ -582,15 +697,29 @@ export class AuthManager {
       businessMessage = `身份有效，但业务页面暂时不可用: ${e.message}`;
     }
 
+    const wlsInfoFinal = parseWlsInfo(cookie);
+    let bingEmail = null;
+    try {
+      bingEmail = await fetchBingUserEmail(cookie);
+    } catch {}
+
+    const resolvedUser = userName || wlsInfoFinal.name || '微软用户';
+    const resolvedEmail = bingEmail || '';
+    const resolvedCid = wlsInfoFinal.cid || '';
+
     identityStatus.balance = balance;
-    identityStatus.userName = userName || '微软用户';
+    identityStatus.userName = resolvedUser;
+    identityStatus.userEmail = resolvedEmail;
+    identityStatus.userCid = resolvedCid;
     identityStatus.streakDays = streakDays;
     identityStatus.stamps = { progress: stampsProgress, max: stampsMax };
     identityStatus.pcSearch = `${pcProgress}/${pcMax}`;
     identityStatus.cookieFormat = scope.format;
     identityStatus.cookieDomains = scope.domains;
     identityStatus.crossDomainReady = scope.crossDomainReady;
-    identityStatus.message = `网页端身份已登录！${userName ? `用户: ${userName} | ` : ''}积分: ${balance} | 连续签到: ${streakDays}天 | 印章进度: ${stampsProgress}/${stampsMax} | 搜索配额: ${pcProgress}/${pcMax}${uWarning}${businessMessage ? ` | ${businessMessage}` : ''}`;
+
+    const userDesc = [resolvedEmail, resolvedUser !== '微软用户' ? resolvedUser : ''].filter(Boolean).join(' / ') || resolvedUser;
+    identityStatus.message = `网页端身份已登录！${userDesc ? `账号: ${userDesc} | ` : ''}积分: ${balance} | 连续签到: ${streakDays}天 | 印章进度: ${stampsProgress}/${stampsMax} | 搜索配额: ${pcProgress}/${pcMax}${uWarning}${businessMessage ? ` | ${businessMessage}` : ''}`;
     return attachIdentityEvidence(identityStatus, identityEvidence);
   }
 
@@ -626,6 +755,9 @@ export class AuthManager {
 
       const data = typeof res === 'string' ? JSON.parse(res) : res;
       const tokenIdentity = createIdentityEvidence(data?.response || {});
+      const userId = acc?.oauthUserId || '';
+      const ruid = data?.response?.profile?.ruid || '';
+      const epuid = data?.response?.profile?.attributes?.epuid || '';
       if (data?.response) {
         const balance = Number(data.response.balance || 0);
         const promos = data.response.promotions || [];
@@ -634,11 +766,14 @@ export class AuthManager {
         return attachIdentityEvidence({
           valid: true,
           balance,
+          userId,
+          ruid,
+          epuid,
           readProgress: readProg,
           message: `移动端已登录 | 积分: ${balance} | 阅读进度: ${readProg}`
         }, tokenIdentity);
       }
-      return attachIdentityEvidence({ valid: true, message: '移动端 Token 有效' }, tokenIdentity);
+      return attachIdentityEvidence({ valid: true, userId, ruid, epuid, message: '移动端 Token 有效' }, tokenIdentity);
     } catch (e) {
       return { valid: false, message: `移动端 DAPI 接口验证失败: ${e.message}` };
     }
