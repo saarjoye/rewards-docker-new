@@ -233,6 +233,8 @@ class BrowserManager extends EventEmitter {
     return added;
   }
   async launchBrowser(acc) {
+    // 搜索/打孔卡开始前立即回收共享抓取浏览器，避免两套 Chromium 同时存活。
+    await this.closeSharedFetcher();
     const execPath = this.getExecutablePath();
     if (!execPath) {
       throw new Error('未检测到 Chromium 或 Edge 浏览器内核，请确保安装了 Chromium');
