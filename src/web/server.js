@@ -31,7 +31,14 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.9.0';
+let CURRENT_VERSION = '1.9.2';
+try {
+  const pkgPath = path.join(__dirname, '..', '..', 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (pkg.version) CURRENT_VERSION = pkg.version;
+  }
+} catch {}
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
