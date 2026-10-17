@@ -80,5 +80,8 @@ jobs:
           # 否则 docker/build-push-action 会因缺少 tag 直接报错。
           tags: ${{ steps.mode.outputs.publish == 'true' && steps.meta.outputs.tags || 'rewards-docker-new:build-check' }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            MSR_BUILD_REVISION=${{ github.sha }}
+            MSR_BUILD_TIME=${{ github.event.repository.pushed_at || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

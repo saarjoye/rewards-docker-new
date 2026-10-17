@@ -32,7 +32,25 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.7.2';
+const CURRENT_VERSION = '1.7.3';
+
+// 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
+// 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
+function readLocalGitRevision() {
+  try {
+    const head = fs.readFileSync(path.join(__dirname, '..', '..', '.git', 'HEAD'), 'utf8').trim();
+    if (head.startsWith('ref: ')) {
+      const refPath = path.join(__dirname, '..', '..', '.git', head.slice(5));
+      if (fs.existsSync(refPath)) return fs.readFileSync(refPath, 'utf8').trim();
+    }
+    return head;
+  } catch {
+    return '';
+  }
+}
+
+const BUILD_REVISION = process.env.MSR_BUILD_REVISION || readLocalGitRevision() || 'dev';
+const BUILD_TIME = process.env.MSR_BUILD_TIME || '';
 
 let lastCpuInfo = os.cpus().map(c => c.times);
 

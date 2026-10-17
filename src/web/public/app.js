@@ -1340,6 +1340,8 @@ async function fetchSystemMetrics() {
 let taskRunning = false;
 // 本地二开版本：仅用于展示，不再监控上游仓库更新。
 let localVersion = '1.7.0';
+let localRevision = '';
+let localBuildTime = '';
 
 // 版本胶囊只展示本地版本与运行状态，不再请求上游仓库更新。
 function refreshVersionPillTooltip() {
@@ -1348,7 +1350,7 @@ function refreshVersionPillTooltip() {
   const statusLine = taskRunning
     ? '🟦 系统状态：正在执行自动化任务打卡中…'
     : '🟢 系统状态：后台定时就绪中';
-  pill.setAttribute('data-tip', `${statusLine}\n本地二开版本：v${localVersion}`);
+  pill.setAttribute('data-tip', `${statusLine}\n本地二开版本：v${localVersion}${localRevision ? `\n构建提交：${localRevision}` : ''}${localBuildTime ? `\n构建时间：${localBuildTime}` : ''}`);
 }
 
 async function loadVersion() {
@@ -1358,7 +1360,13 @@ async function loadVersion() {
     if (!current) return;
     localVersion = String(current);
     const label = document.getElementById('version-label');
-    if (label) label.innerText = `v${localVersion}`;
+    localRevision = String(res?.data?.revision || '');
+    localBuildTime = String(res?.data?.buildTime || '');
+    if (label) {
+      label.innerText = localRevision && localRevision !== 'dev'
+        ? `v${localVersion} · ${localRevision.slice(0, 7)}`
+        : `v${localVersion}`;
+    }
     refreshVersionPillTooltip();
   } catch {}
 }

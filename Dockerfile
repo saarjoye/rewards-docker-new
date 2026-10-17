@@ -21,6 +21,12 @@ ENV CHROMIUM_PATH=/usr/bin/chromium
 # 否则它会输出 "Tini is not running as PID 1" 并且完全不起作用（实测）。
 ENV TINI_SUBREAPER=1
 
+# 构建时注入提交号，供面板显示「容器里跑的是哪次提交」
+ARG MSR_BUILD_REVISION=dev
+ARG MSR_BUILD_TIME=
+ENV MSR_BUILD_REVISION=${MSR_BUILD_REVISION}
+ENV MSR_BUILD_TIME=${MSR_BUILD_TIME}
+
 WORKDIR /app
 
 # 先复制 package 文件以利用 Docker 层缓存
