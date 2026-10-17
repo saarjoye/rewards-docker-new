@@ -1,4 +1,4 @@
-﻿FROM public.ecr.aws/docker/library/node:20-bookworm-slim
+﻿FROM node:20-bookworm-slim
 
 # 安装 tzdata、chromium、中文字体与 tini
 #   - tini：容器 PID 1，负责回收 Chromium 产生的孤儿/僵尸进程。
