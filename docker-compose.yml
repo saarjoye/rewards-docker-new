@@ -1,4 +1,4 @@
-version: '3.8'
+﻿version: '3.8'
 
 services:
   microsoft-rewards:
@@ -9,13 +9,38 @@ services:
       dockerfile: Dockerfile
     container_name: ms-rewards
     restart: unless-stopped
+
+    # init: true 让 Docker 在容器内以 tini 作为 PID 1。
+    # 这是本次修复的核心：没有它时 PID 1 是 npm，npm 不会回收孤儿进程，
+    # 每次 Chromium 搜索任务结束后都会残留 chrome_crashpad / chromium 僵尸
+    #（实测一次任务后残留 35+ 个 Z 进程，且随时间持续累积）。
+    # 新镜像的 ENTRYPOINT 已内置 tini，这里再加一层，兼容旧镜像/纯 docker run。
+    init: true
+
     ports:
       - "5308:5308"
+
     environment:
       - TZ=Asia/Shanghai
       - PORT=5308
+      # 限制 V8 老生代堆，避免长时间守护后空闲内存一直被 V8 攥着。
+      # 任务峰值的大头是 Chromium 渲染进程，由 src/core/browser.js 的启动参数控制。
+      - NODE_OPTIONS=--max-old-space-size=384
+
+    # ⚠️ 关于内存上限（mem_limit）——本次刻意不默认开启，原因如下：
+    #   实测 memory.stat 显示容器占用以 anon（匿名内存）为主：
+    #     空闲：memory.current 371MiB，anon 197MiB
+    #     运行：memory.current 673MiB，anon 595MiB
+    #   匿名页在没有 swap/zswap 的情况下**无法被内核回收**，
+    #   所以设一个低于真实峰值（实测搜索峰值约 1.8G）的硬上限，
+    #   结果不是"内存被释放"，而是任务跑到一半被 OOM Kill。
+    #   若确实要限制，请先跑几天 diagnose.sh 观察峰值后，再设一个
+    #   **高于峰值**的值作为兜底（例如峰值 1.8G → 设 2g），并给容器配 swap。
+    # mem_limit: 2g
+
     volumes:
       - ./data:/app/data
+
     logging:
       driver: "json-file"
       options:

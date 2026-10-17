@@ -118,7 +118,33 @@ test('getRewardsInfo 解析必应应用连签真实状态', async () => {
 test('getActivityCardStatus 统计 activityCards 完成情况', async () => {
   await withStubbedNetwork(EARN_FIXTURE, async () => {
     const status = await rewardsApi.getActivityCardStatus();
-    assert.deepEqual(status, { total: 2, completed: 1 });
+    assert.deepEqual(status, { total: 2, completed: 1, readable: true, reason: null });
+  });
+});
+
+test('getActivityCardStatus 读不到卡片时给出可诊断原因（不再静默返回 null）', async () => {
+  await withStubbedNetwork('<html><body>login.live.com Sign in</body></html>', async () => {
+    const status = await rewardsApi.getActivityCardStatus();
+    assert.equal(status.readable, false);
+    assert.equal(status.reason, 'not-signed-in');
+    assert.equal(status.total, 0);
+  });
+});
+
+test('getActivityCardStatus 页面改版导致找不到 activityCards 时有明确原因', async () => {
+  await withStubbedNetwork('<html><body>no cards here</body></html>', async () => {
+    const status = await rewardsApi.getActivityCardStatus();
+    assert.equal(status.readable, false);
+    assert.equal(status.reason, 'activity-cards-not-found');
+  });
+});
+
+test('getActivityCardStatus 兼容双重转义 + 空数组（readable 且 total=0）', async () => {
+  const fixture = '<script>self.__next_f.push([1,"z:\\"activityCards\\":[]"])</script>';
+  await withStubbedNetwork(fixture, async () => {
+    const status = await rewardsApi.getActivityCardStatus();
+    assert.equal(status.readable, true);
+    assert.equal(status.total, 0);
   });
 });
 
@@ -141,5 +167,15 @@ test('discoverCards 给卡片打上分类，供独立开关过滤', async () => 
     const byId = Object.fromEntries(cards.map(c => [c.offerId, c.category]));
     assert.equal(byId['Gamification_DailySet_ZHCN_20261015_Child1'], 'dailyset');
     assert.equal(byId['ZHstar_Rewards_DailyGlobalOffer_Evergreen_Monday'], 'promo');
+  });
+});
+
+test('discoverCards 能解析带嵌套字段的卡片对象（旧正则失配回归）', async () => {
+  const fixture = '<script>self.__next_f.push([1,"a:{\\"offerId\\":\\"ZHstar_Rewards_DailyGlobalOffer_Evergreen_Monday\\",\\"hash\\":\\"h2\\",\\"points\\":5,\\"attributes\\":{\\"x\\":1},\\"destination\\":{\\"url\\":\\"/earn\\"},\\"title\\":\\"拼图\\"}"])</script>';
+  await withStubbedNetwork(fixture, async () => {
+    const cards = await rewardsApi.discoverCards();
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].offerId, 'ZHstar_Rewards_DailyGlobalOffer_Evergreen_Monday');
+    assert.equal(cards[0].kind, 'puzzle');
   });
 });

@@ -252,7 +252,16 @@ class BrowserManager extends EventEmitter {
           '--disable-dev-shm-usage',
           '--disable-gpu',
           '--no-first-run',
-          '--no-default-browser-check'
+          '--no-default-browser-check',
+          // 内存与进程数控制：NAS 上默认会派生大量 renderer/utility，单轮可涨到 1.8G
+          // 限制 renderer 数量 + 关闭 crashpad（僵尸进程主要来源）+ 关掉软件光栅化
+          '--renderer-process-limit=1',
+          '--disable-background-networking',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-software-rasterizer',
+          '--disable-breakpad',
+          '--disable-crash-reporter',
         ]
       });
 
@@ -375,6 +384,31 @@ class BrowserManager extends EventEmitter {
       logger.log('🟡', `浏览器指纹对齐失败，本次以默认指纹继续: ${e.message}`);
     }
     return page;
+  }
+
+  /**
+   * 回收当前页面并新建一个，用于长流程（多轮搜索）中途释放渲染侧内存。
+   *
+   * 为什么需要：cn.bing.com 的搜索结果页每个都很大，同一标签页连续导航十几轮后，
+   * 渲染进程的匿名内存（anon）只涨不落 —— 实测单轮任务峰值可达 1.8G。
+   * 浏览器进程本身没泄漏，但「一个超长会话」会持续抬高水位。
+   * 中途换页能把绝大部分渲染内存还给系统，同时 Cookie/localStorage 都在 context 上，不受影响。
+   */
+  async recyclePage(context, accName = '当前账号') {
+    try {
+      if (this.page) {
+        await this.page.close().catch(() => {});
+      }
+      // 关闭旧 CDP 会话引用，避免长期持有失效对象
+      this.cdpSessions = [];
+      const page = await this.createPage(context);
+      this.page = page;
+      logger.log('♻️', '已回收并重建页面，释放渲染侧累积内存', '', accName);
+      return page;
+    } catch (e) {
+      logger.log('🟡', `页面回收失败（继续使用原页面）: ${e.message}`, '', accName);
+      return this.page;
+    }
   }
 
   /**
@@ -547,7 +581,9 @@ class BrowserManager extends EventEmitter {
 
     try {
       const { browser, context } = await this.launchBrowser(acc);
-      const page = await this.createPage(context);
+      let page = await this.createPage(context);
+      // 每处理 N 轮就换一次页面，避免长会话把渲染内存水位越抬越高
+      const PAGE_RECYCLE_EVERY = 4;
       this.page = page;
 
       for (let i = 0; i < totalSearches; i++) {
@@ -648,6 +684,11 @@ class BrowserManager extends EventEmitter {
 
         // 如果已经是最后一次，不等待
         if (i === totalSearches - 1) break;
+
+        // 长流程中途回收页面：降低渲染侧匿名内存峰值（Cookie/localStorage 在 context 上，不受影响）
+        if ((i + 1) % PAGE_RECYCLE_EVERY === 0) {
+          page = await this.recyclePage(context, accName);
+        }
 
         // 计算下一次搜索的拟人休眠时间（基础间隔 + 0~浮动 秒）
         const waitSec = intervalSec + rewardsApi.randomRange(0, jitterSec);

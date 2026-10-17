@@ -140,7 +140,12 @@ export class EpicManager {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--no-first-run',
-        '--no-default-browser-check'
+        '--no-default-browser-check',
+        '--renderer-process-limit=1',
+        '--disable-background-networking',
+        '--disable-software-rasterizer',
+        '--disable-breakpad',
+        '--disable-crash-reporter',
       ],
       userAgent: UA,
       viewport: { width: 1366, height: 768 },

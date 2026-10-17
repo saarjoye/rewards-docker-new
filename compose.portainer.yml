@@ -1,4 +1,4 @@
-# Portainer Stack 部署文件
+﻿# Portainer Stack 部署文件
 # 先在 LXC 上构建 fork 镜像：
 #   docker build -t microsoft-rewards-fork:main .
 # 再在 Portainer 中以 Compose 内容方式创建 Stack；本文件不触发远程拉取基础镜像。
@@ -7,13 +7,25 @@ services:
     image: microsoft-rewards-fork:main
     container_name: ms-rewards
     restart: unless-stopped
+
+    # 回收 Chromium 孤儿/僵尸进程（详见 docker-compose.yml 中的说明）
+    init: true
+
     ports:
       - "5308:5308"
+
     environment:
       TZ: Asia/Shanghai
       PORT: "5308"
+      NODE_OPTIONS: --max-old-space-size=384
+
+    # 内存上限默认不开：容器占用以 anon 为主，匿名页无 swap 不可回收，
+    # 低于峰值的硬上限只会导致 OOM Kill。确需限制请先看 diagnose.sh 的峰值再设。
+    # mem_limit: 2g
+
     volumes:
       - microsoft-rewards-data:/app/data
+
     logging:
       driver: json-file
       options:

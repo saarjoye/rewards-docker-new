@@ -14,6 +14,7 @@ import rewardsApi from '../core/api.js';
 import historyManager from '../core/history.js';
 import browserManager from '../core/browser.js';
 import epicManager from '../core/epic.js';
+import memorySampler from '../core/memorySampler.js';
 import { accountContextLock } from '../core/contextLock.js';
 import {
   buildAdminLogoutCookie,
@@ -163,6 +164,70 @@ function readContainerCpuUsec() {
 let lastContainerCpu = null;
 let lastContainerCpuPercent = 0;
 
+// ===== 容器内存峰值跟踪（进程内，重启清零） =====
+// 目的：用户不必手动盯 docker stats —— 面板会记住本次运行以来的最高水位，
+// 并区分「峰值里的 anon（不可回收的匿名内存）」与「file（可回收的页缓存）」，
+// 便于判断该不该设 mem_limit、以及设多少。
+const memoryPeak = {
+  currentMiB: 0,
+  peakMiB: 0,
+  peakAnonMiB: 0,
+  peakFileMiB: 0,
+  peakAt: 0,
+  zombiePeak: 0
+};
+
+/** 从 memory.stat 文本里取指定字段（字节）。 */
+function statValue(statText, key) {
+  if (!statText) return 0;
+  const m = String(statText).match(new RegExp('^' + key + '\\s+(\\d+)', 'm'));
+  return m ? Number(m[1]) : 0;
+}
+
+/** 读取当前 cgroup 的 anon / file 明细（字节）；读不到返回 null。 */
+function readMemoryBreakdown() {
+  for (const { dir } of resolveCgroupDirs('memory')) {
+    const stat = readTextFile(path.join(dir, 'memory.stat'));
+    if (!stat) continue;
+    return {
+      anon: statValue(stat, 'anon'),
+      file: statValue(stat, 'file'),
+      inactiveFile: statValue(stat, 'inactive_file'),
+      inactiveAnon: statValue(stat, 'inactive_anon')
+    };
+  }
+  return null;
+}
+
+/** 用一次采样更新峰值，返回当前与历史峰值。 */
+function updateMemoryPeak(currentBytes, zombieCount) {
+  const currentMiB = Math.round(currentBytes / (1024 * 1024));
+  const breakdown = readMemoryBreakdown();
+  const anonMiB = breakdown ? Math.round(breakdown.anon / (1024 * 1024)) : 0;
+  const fileMiB = breakdown ? Math.round(breakdown.file / (1024 * 1024)) : 0;
+  memoryPeak.currentMiB = currentMiB;
+  if (currentMiB > memoryPeak.peakMiB) {
+    memoryPeak.peakMiB = currentMiB;
+    memoryPeak.peakAnonMiB = anonMiB;
+    memoryPeak.peakFileMiB = fileMiB;
+    memoryPeak.peakAt = Date.now();
+  }
+  if (Number.isFinite(zombieCount) && zombieCount > memoryPeak.zombiePeak) {
+    memoryPeak.zombiePeak = zombieCount;
+  }
+  return {
+    currentMiB,
+    peakMiB: memoryPeak.peakMiB,
+    peakAnonMiB: memoryPeak.peakAnonMiB,
+    peakFileMiB: memoryPeak.peakFileMiB,
+    peakAt: memoryPeak.peakAt,
+    zombiePeak: memoryPeak.zombiePeak,
+    anonMiB,
+    fileMiB
+  };
+}
+
+
 /**
  * 容器 CPU 占用百分比（与 docker stats 口径一致：占单核的百分比，
  * 例如 150% 表示约 1.5 个核心）。首次采样没有基线，返回 0。
@@ -190,6 +255,38 @@ function getContainerCpuPercent() {
  * 容器内存占用（字节）。与 docker stats 一样扣除 inactive file cache，
  * 否则会把页面缓存也算成占用。读不到 cgroup 时返回 null。
  */
+/**
+ * 统计容器内僵尸进程（STAT 以 Z 开头）与进程总数。
+ *
+ * 这是实测出来的真实缺陷：PID 1 若是 npm（不具备 reap 能力），每次 Chromium 任务
+ * 结束后都会留下 chrome_crashpad / chromium 僵尸。僵尸本身不占内存（RSS 恒为 0），
+ * 但会持续占用 PID 表项，长期运行可能耗尽容器 PID 配额；更重要的是它是
+ * 「进程树没有干净收尾」的可靠信号，值得在监控里显式暴露而不是等人肉 ps。
+ *
+ * 读不到 /proc 时返回 null（例如非 Linux 环境）。
+ */
+function countContainerProcesses() {
+  let total = 0;
+  let zombies = 0;
+  const zombieNames = [];
+  try {
+    for (const name of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(name)) continue;
+      const status = readTextFile(`/proc/${name}/status`);
+      if (!status) continue;
+      total += 1;
+      if (/^State:\s*Z/m.test(status)) {
+        zombies += 1;
+        const comm = (status.match(/^Name:\s*(.+)$/m) || [])[1];
+        if (comm && zombieNames.length < 10) zombieNames.push(comm.trim());
+      }
+    }
+  } catch {
+    return null;
+  }
+  return { total, zombies, zombieNames };
+}
+
 function readContainerMemory() {
   for (const { dir, version } of resolveCgroupDirs('memory')) {
     if (version === 2) {
@@ -436,6 +533,17 @@ export function createServer() {
   app.use(express.static(path.join(__dirname, 'public')));
 
   // 0. 系统硬件与网络实时监控指标
+  // 内存峰值：本进程实时峰值 + 历史任务记录（无需手动盯 docker stats）
+  app.get('/api/system/memory-peak', (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        currentRun: memorySampler.getPeak(),
+        history: memorySampler.getHistory()
+      }
+    });
+  });
+
   app.get('/api/system/metrics', async (req, res) => {
     try {
       const containerCpu = getContainerCpuPercent();
@@ -451,8 +559,10 @@ export function createServer() {
       // 容器自身内存（含 Chromium 等子进程），这才是用户想看的数字。
       // 读不到 cgroup 时退而求其次，累计容器内所有进程的 RSS。
       const containerMem = readContainerMemory() || sumContainerProcessRss();
+      const procCount = countContainerProcesses();
       const memUsage = process.memoryUsage();
       const procMemMB = Math.round(memUsage.rss / (1024 * 1024));
+      const memPeak = updateMemoryPeak(containerMem ? containerMem.usage : procMemMB * 1024 * 1024, procCount ? procCount.zombies : null);
       const heapUsedMB = Math.round(memUsage.heapUsed / (1024 * 1024));
       const heapTotalMB = Math.round(memUsage.heapTotal / (1024 * 1024));
       const totalMemGB = (totalMemBytes / (1024 * 1024 * 1024)).toFixed(1);
@@ -491,6 +601,15 @@ export function createServer() {
             containerMemoryLimit: containerLimitMB ? `${containerLimitMB} MB` : '无限制',
             containerMemoryPercent: containerMemPercent,
             containerMemorySource: containerMem?.source || null,
+            processCount: procCount ? procCount.total : null,
+            zombieCount: procCount ? procCount.zombies : null,
+            zombieNames: procCount ? procCount.zombieNames : [],
+            memoryCurrent: `${memPeak.currentMiB} MB`,
+            memoryPeak: `${memPeak.peakMiB} MB`,
+            memoryPeakAnon: `${memPeak.peakAnonMiB} MB`,
+            memoryPeakFile: `${memPeak.peakFileMiB} MB`,
+            memoryPeakAt: memPeak.peakAt ? new Date(memPeak.peakAt).toISOString() : null,
+            zombiePeak: memPeak.zombiePeak,
             hostMemory: `${usedMemGB} GB / ${totalMemGB} GB (${hostMemPercent}%)`,
             hostCpu: `${hostCpuPercent}%`,
             uptime: uptimeStr,

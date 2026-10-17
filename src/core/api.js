@@ -3,6 +3,7 @@ import configManager from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
 import authManager from './auth.js';
+import { concatFlightChunks, extractOfferObjects, extractJsonArray, normalizeFlightFragment } from './flightParse.js';
 import {
   PC_USER_AGENT,
   MOBILE_USER_AGENT,
@@ -1005,31 +1006,38 @@ export class RewardsApi {
         url: 'https://rewards.bing.com/earn',
         headers: pcPageHeaders()
       });
-      if (!html) return null;
-      const clean = String(html).replace(/\\"/g, '"');
-      const keyIdx = clean.indexOf('"activityCards":[');
-      if (keyIdx === -1) return null;
-      const start = clean.indexOf('[', keyIdx);
-      let depth = 0;
-      let end = -1;
-      for (let i = start; i < clean.length; i++) {
-        if (clean[i] === '[') depth++;
-        else if (clean[i] === ']') {
-          depth--;
-          if (depth === 0) { end = i + 1; break; }
-        }
+      if (!html) return { total: 0, completed: 0, readable: false, reason: 'empty-response' };
+
+      // /earn 是 Next.js RSC 页面，activityCards 位于 self.__next_f.push 的转义片段内。
+      // 旧实现直接 indexOf('"activityCards":[') —— 一旦页面把引号输出成 \"activityCards\"，
+      // 就永远匹配不到，于是把「其实读到了、只是没有卡片」误报成「未能读取官网状态」。
+      // 这里先拼回 Flight 文本，再用「字符串感知 + 括号配平」的方式抽取数组，两种形态都能识别。
+      const text = normalizeFlightFragment(concatFlightChunks(html));
+      const raw = extractJsonArray(text, 'activityCards');
+      if (!raw) {
+        const loggedOut = /login\.live\.com|Sign in|登录/i.test(String(html));
+        return {
+          total: 0,
+          completed: 0,
+          readable: false,
+          reason: loggedOut ? 'not-signed-in' : 'activity-cards-not-found'
+        };
       }
-      if (end === -1) return null;
-      const raw = clean.slice(start, end)
-        .replace(/:\$undefined/g, ':null')
-        .replace(/:\$D[^,}\]]+/g, ':null');
+
+      const cleaned = raw.replace(/:\$undefined/g, ':null').replace(/:\$D[^,}\]]+/g, ':null');
       let cards;
-      try { cards = JSON.parse(raw); } catch { return null; }
-      if (!Array.isArray(cards) || cards.length === 0) return null;
+      try {
+        cards = JSON.parse(cleaned);
+      } catch {
+        return { total: 0, completed: 0, readable: false, reason: 'json-parse-failed' };
+      }
+      if (!Array.isArray(cards)) {
+        return { total: 0, completed: 0, readable: false, reason: 'not-an-array' };
+      }
       const completed = cards.filter(c => c && c.isCompleted === true).length;
-      return { total: cards.length, completed };
+      return { total: cards.length, completed, readable: true, reason: null };
     } catch {
-      return null;
+      return { total: 0, completed: 0, readable: false, reason: 'request-failed' };
     }
   }
 
@@ -1068,27 +1076,23 @@ export class RewardsApi {
       if (!html) return cards;
 
       // 1. Next.js Flight Chunks 解析
+      //    卡片对象普遍带嵌套字段（attributes / destination / isLocked 等）。
+      //    旧正则 /\{[^{}]*?"offerId"\s*:\s*"([^"]+)"[^{}]*?\}/ 不允许花括号嵌套，
+      //    所以只要卡片里出现任意子对象就会「整体失配」，一张卡都扫不到 ——
+      //    上层看到的就是「0 张可执行卡片」。这里改用括号配平扫描，嵌套多深都能取出对象。
       try {
-        const chunks = [];
-        const pushRegex = /self\.__next_f\.push\(\[\d+,\s*"(.*?)"\]\)/gs;
-        let mFlight;
-        while ((mFlight = pushRegex.exec(String(html))) !== null) {
+        const fullFlightText = normalizeFlightFragment(concatFlightChunks(html));
+        const offerObjects = extractOfferObjects(fullFlightText);
+        let skippedCompleted = 0;
+        let skippedLocked = 0;
+        for (const objectText of offerObjects) {
           try {
-            const unescaped = JSON.parse(`"${mFlight[1]}"`);
-            chunks.push(unescaped);
-          } catch {}
-        }
-        const fullFlightText = chunks.length > 0 ? chunks.join('') : String(html).replace(/\\"/g, '"');
-        const offerObjRegex = /\{[^{}]*?"offerId"\s*:\s*"([^"]+)"[^{}]*?\}/g;
-        let om;
-        while ((om = offerObjRegex.exec(fullFlightText)) !== null) {
-          try {
-            const jsonStr = om[0].replace(/:\$undefined/g, ':null').replace(/:\$D[^\",}]+/g, ':null');
-            const item = JSON.parse(jsonStr);
+            const item = JSON.parse(objectText.replace(/:\$undefined/g, ':null').replace(/:\$D[^,}\]]+/g, ':null'));
             if (!item.offerId || !item.hash) continue;
-            if (item.isCompleted === true || item.isLocked === true) continue;
+            if (item.isCompleted === true) { skippedCompleted++; continue; }
+            if (item.isLocked === true) { skippedLocked++; continue; }
             const points = Number(item.points || 0);
-            if (points <= 0 && !item.offerId.includes('DailySet')) continue;
+            if (points <= 0 && !String(item.offerId).includes('DailySet')) continue;
             pushCard({
               title: item.title || item.name || item.offerId,
               points: points || 10,
@@ -1099,6 +1103,13 @@ export class RewardsApi {
               url: 'https://rewards.bing.com/earn'
             });
           } catch {}
+        }
+        if (offerObjects.length > 0) {
+          // 关键诊断：区分「官网真的没给卡片」与「给了但全完成/全锁/解析失败」
+          logger.log(
+            '🧩',
+            `活动卡片解析：官网返回 ${offerObjects.length} 个卡片对象，已完成 ${skippedCompleted}、未解锁 ${skippedLocked}，可执行 ${cards.length} 项`
+          );
         }
       } catch (e) {
         logger.log('🟡', `Flight 卡片数据解析异常: ${e.message}`);

@@ -2,6 +2,7 @@ import configManager from './config.js';
 import logger from './logger.js';
 import scheduler from './scheduler.js';
 import historyManager from './core/history.js';
+import memorySampler from './core/memorySampler.js';
 import { createServer } from './web/server.js';
 
 async function bootstrap() {
@@ -21,6 +22,9 @@ async function bootstrap() {
     logger.log('💡', '如果是 NAS 或 VPS 部署，请访问: http://<服务器局域网或公网IP>:' + port);
   });
 
+  // 内存采样器：每 15 秒记录一次，供面板查看峰值（不依赖是否有人打开 WebUI）
+  memorySampler.start();
+
   // 启动后台定时任务
   scheduler.start();
 
@@ -28,6 +32,9 @@ async function bootstrap() {
   const shutdown = () => {
     logger.log('🛑', '正在安全退出服务...');
     scheduler.stop();
+    // 记录本次运行的内存峰值，供下次排查
+    memorySampler.commitRun('container-lifetime');
+    memorySampler.stop();
     // 历史记录现在是「内存缓存 + 延迟落盘」，退出前必须冲一次，否则会丢最后几秒的记录
     historyManager.flush();
     server.close(() => {

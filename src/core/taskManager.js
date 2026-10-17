@@ -9,6 +9,7 @@ import historyManager from './history.js';
 import browserManager from './browser.js';
 import { accountContextLock } from './contextLock.js';
 import { SearchStagnationGuard, normalizeStagnantLimit } from './searchStagnation.js';
+import memorySampler from './memorySampler.js';
 import { DATA_DIR, writeFileAtomic } from '../fsUtil.js';
 
 const STATS_FILE = path.join(DATA_DIR, 'stats.json');
@@ -955,17 +956,28 @@ export class TaskManager {
         // 一张都没扫到：用官网 activityCards 的真实完成情况判断，
         // 不再无脑标成「已完成 +10 分」（那正是虚高分数的来源之一）。
         const cardStatus = await rewardsApi.getActivityCardStatus();
-        if (cardStatus && cardStatus.completed >= cardStatus.total) {
+        if (cardStatus?.readable && cardStatus.total > 0 && cardStatus.completed >= cardStatus.total) {
           logger.log('✅', `今日活动卡片已全部完成 (${cardStatus.completed}/${cardStatus.total})`, accountName);
-          this.updateTask('promos', {
-            progress: cardStatus.completed,
-            max: cardStatus.total,
-            points: 0,
-            done: true
-          }, accountId);
+          this.updateTask('promos', { progress: cardStatus.completed, max: cardStatus.total, points: 0, done: true }, accountId);
+        } else if (cardStatus?.readable && cardStatus.total > 0) {
+          // 读到了状态但确实还有未完成：如实显示进度，不要谎报已完成
+          logger.log('ℹ️', `今日活动卡片 ${cardStatus.completed}/${cardStatus.total}，本期未发现可自动执行的卡片，保持未完成状态，不记分`, accountName);
+          this.updateTask('promos', { progress: cardStatus.completed, max: cardStatus.total, points: 0, done: false }, accountId);
+        } else if (cardStatus?.readable && cardStatus.total === 0) {
+          // 官网明确返回了空的 activityCards：今天确实没有卡片，不是“读不到”
+          logger.log('ℹ️', '今日官网未展示任何活动卡片，保持未完成状态，不记分', accountName);
+          this.updateTask('promos', { progress: 0, max: 0, points: 0, done: false }, accountId);
         } else {
-          const detail = cardStatus ? `（官网显示 ${cardStatus.completed}/${cardStatus.total}）` : '（未能读取官网状态）';
-          logger.log('ℹ️', `今日未发现可执行的活动卡片${detail}，保持未完成状态，不记分`, accountName);
+          // 真·读取失败：把原因带出来，便于区分 Cookie 失效 / 页面改版 / 网络异常
+          const reasonText = {
+            'not-signed-in': '官网要求重新登录，Cookie 可能已失效',
+            'activity-cards-not-found': '官网页面结构可能已改版（未找到 activityCards 字段）',
+            'json-parse-failed': '卡片数据解析失败',
+            'not-an-array': '卡片数据格式异常',
+            'empty-response': '官网返回空响应',
+            'request-failed': '请求官网失败（网络或风控）'
+          }[cardStatus?.reason] || '未知原因';
+          logger.log('🟡', `未能读取官网活动卡片状态（${reasonText}），保持未完成状态，不记分`, accountName);
           this.updateTask('promos', { progress: 0, max: 0, points: 0, done: false }, accountId);
         }
       }
@@ -1288,6 +1300,8 @@ export class TaskManager {
       this.runningAccountId = null;
       logger.setAccountContext('');
       accountContextLock.release('task-run');
+      // 任务级内存峰值快照（tini 回收僵尸后再看这个数字才准确）
+      try { memorySampler.commitRun('task-run'); } catch {}
     }
   }
 }
