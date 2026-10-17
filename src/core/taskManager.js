@@ -18,6 +18,13 @@ export class TaskManager {
   constructor() {
     this.running = false;
     this.runningAccountId = null;
+    this.runTicket = 0;
+    this.runPhase = 'idle';
+    this.runPhaseDetail = '';
+    this.runQueue = [];
+    this.runQueueIndex = 0;
+    this.runTotalAccounts = 0;
+    this.runStartedAt = 0;
     this.lastUnifiedReportDate = 0;
     this.stats = this.loadStats();
   }
@@ -635,6 +642,11 @@ export class TaskManager {
     return {
       running: this.running,
       runningAccountId: this.runningAccountId,
+      runPhase: this.runPhase,
+      runPhaseDetail: this.runPhaseDetail,
+      runQueue: this.runQueue,
+      runQueueIndex: this.runQueueIndex,
+      runTotalAccounts: this.runTotalAccounts,
       selectedAccountId: accountId || 'all',
       summary,
       stats: activeStats,
@@ -647,6 +659,8 @@ export class TaskManager {
       logger.log('🛑', '正在中断当前任务执行流程...');
       this.running = false;
       this.runningAccountId = null;
+      this.runPhase = 'stopping';
+      this.runPhaseDetail = '正在停止任务并回收浏览器';
     }
     browserManager.stop();
   }
@@ -793,6 +807,11 @@ export class TaskManager {
   /**
    * 为单个账号执行全套打卡任务
    */
+  setRunPhase(phase, detail = '') {
+    this.runPhase = phase;
+    this.runPhaseDetail = detail;
+  }
+
   async runSingleAccount(accCfg, globalCfg, options = {}) {
     const accountId = accCfg.id;
     const accountName = accCfg.name || accountId;
@@ -803,6 +822,7 @@ export class TaskManager {
     rewardsApi.setCurrentAccount(accCfg);
     // 切换日志账号上下文：该账号下未显式传账号名的日志也会自动带上账号名
     logger.setAccountContext(accountName);
+    this.setRunPhase('sync', '正在同步账号 ' + accountName + ' 的官网进度');
 
     logger.log('👤', `>>> 开始执行账号 [${accountName}] 的自动化打卡任务 <<<`, accountName);
 
@@ -830,6 +850,7 @@ export class TaskManager {
     this.saveStats();
     logger.log('📊', `当前积分: ${accStats.balance}`, accountName);
 
+    this.setRunPhase('auth', '正在准备账号 ' + accountName + ' 的登录凭据');
     // 检查或刷新 Token
     const tokenOk = await authManager.refreshToken(false, accountId);
     if (!tokenOk) {
@@ -933,6 +954,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
+    this.setRunPhase('cards', '正在处理账号 ' + accountName + ' 的活动卡片与每日活动集');
     // 3. 活动卡片 / 每日活动集 / 桌面端打孔卡（三个真正独立的开关）
     const wantDailySet = globalCfg.tasks?.dailySet !== false;
     const wantDesktop = globalCfg.tasks?.desktopApp !== false;
@@ -1038,6 +1060,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
+    this.setRunPhase('search', '正在处理账号 ' + accountName + ' 的 PC 搜索任务');
     // 4. 必应 PC 搜索任务与仪表盘同步
     const info = await rewardsApi.getRewardsInfo();
     if (info) {
@@ -1129,6 +1152,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
+    this.setRunPhase('quests', '正在处理账号 ' + accountName + ' 的任务打孔卡');
     // 4.5 任务区打孔卡 (如「十月必看五大亮点」这类每天解锁一个的任务)
     //     旧版本完全没处理这类任务，导致官网上长期停在 0/5。
     if (globalCfg.tasks?.promos && this.running && browserManager.getExecutablePath()) {
@@ -1172,6 +1196,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
+    this.setRunPhase('finish', '正在结算账号 ' + accountName + ' 的积分与连签');
     // 5. 连签检测与额外积分检测
     //    视觉搜索补签只在任务执行期尝试（每账号每天一次），读取进度的同步流程不再触发
     const streakInfo = await rewardsApi.checkStreak({ allowVisualSearchCheckIn: true });
@@ -1195,7 +1220,11 @@ export class TaskManager {
     accStats.lastUpdate = Date.now();
     this.saveStats();
 
-    logger.log('✅', `账号 [${accountName}] 任务完成！今日新增: +${accStats.earned} | 当前余额: ${accStats.balance}`, accountName);
+    const unfinished = Object.values(accStats.tasks || {}).filter(t => !(t.done || (t.max > 0 && t.progress >= t.max)));
+    const accountResult = unfinished.length > 0
+      ? `本轮流程结束，仍有 ${unfinished.length} 项任务未满额`
+      : '全部任务已满额完成';
+    logger.log(unfinished.length > 0 ? 'ℹ️' : '✅', `账号 [${accountName}] ${accountResult}！今日新增: +${accStats.earned} | 当前余额: ${accStats.balance}`, accountName);
   }
 
   async fallbackHttpSearch(accCfg, neededPoints, curSearch, maxSearch, globalCfg, onProgress = null, options = {}) {
@@ -1253,20 +1282,26 @@ export class TaskManager {
    * 轮询执行全部账号或指定账号
    */
   async runAll(manual = false, targetAccountId = null) {
+    // 原子租约必须在任何 await 之前。旧实现先判断 running、再等待可重入锁，
+    // 两个并发请求会同时通过检查并启动两套任务。
     if (this.running) {
       logger.log('🟡', '任务当前正在运行中，请勿重复触发！');
       return false;
     }
-
-    // 抢占账号上下文锁：执行期间 WebUI 的同步 / 体检 / 测搜都会自动跳过，
-    // 避免它们把全局 Cookie/Token 上下文切到别的账号，导致任务算错账号。
-    const locked = await accountContextLock.acquire('task-run', 60000);
-    if (!locked) {
+    const lease = accountContextLock.tryAcquireExclusive('task-run');
+    if (!lease.acquired) {
       logger.log('🟡', '账号上下文正被其它操作占用，请稍后重试');
       return false;
     }
-
+    const runTicket = lease.ticket;
     this.running = true;
+    this.runQueue = [];
+    this.runQueueIndex = 0;
+    this.runTotalAccounts = 0;
+    this.runStartedAt = Date.now();
+    this.runTicket = runTicket;
+    this.runPhase = 'starting';
+    this.runPhaseDetail = '正在准备自动化任务';
     const startTime = Date.now();
 
     try {
@@ -1284,6 +1319,11 @@ export class TaskManager {
         return false;
       }
 
+      this.runQueue = targetList.map(a => ({ id: a.id, name: a.name || a.id }));
+      this.runQueueIndex = 0;
+      this.runTotalAccounts = targetList.length;
+      this.runStartedAt = Date.now();
+
       logger.log('🚀', `===== 启动全自动化任务 (${manual ? '手动触发' : '定时巡检'} | 共 ${targetList.length} 个账号) =====`);
 
       // 检测地区
@@ -1299,6 +1339,7 @@ export class TaskManager {
       const failures = [];
       for (let i = 0; i < targetList.length && this.running; i++) {
         const acc = targetList[i];
+        this.runQueueIndex = i;
         try {
           await this.runSingleAccount(acc, globalCfg, { manual });
         } catch (e) {
@@ -1326,7 +1367,8 @@ export class TaskManager {
       const reportLines = summary.accountsList.map(a => `• ${a.name}: 今日 +${a.earned} | 余额 ${a.balance} | 连签 ${a.streakDays}天`);
       const failLines = failures.map(f => `• ${f.name}: ❌ ${f.error}`);
       const isSingleRun = !!targetAccountId && targetAccountId !== 'all';
-      const summaryTitle = isSingleRun ? `账号 [${targetList[0]?.name || targetAccountId}] 任务执行完毕` : '全部任务执行完毕';
+      const scopeLabel = isSingleRun ? `账号 [${targetList[0]?.name || targetAccountId}]` : '全部账号';
+      const summaryTitle = `${scopeLabel} 本轮执行结束`;
       const summaryMsg = `🎉 ${summaryTitle}！用时 ${elapsed} 秒\n总计今日新增: +${summary.totalEarned} 积分\n总积分余额: ${summary.totalBalance}\n\n${reportLines.join('\n')}`
         + (failLines.length > 0 ? `\n\n异常账号 (${failLines.length}):\n${failLines.join('\n')}` : '');
       logger.log('🎉', summaryMsg);
@@ -1342,7 +1384,10 @@ export class TaskManager {
       const shouldSendUnifiedReport = (!isSingleRun && manual) || (allFinishedToday && this.lastUnifiedReportDate !== todayKey);
       if (shouldSendUnifiedReport) {
         this.lastUnifiedReportDate = todayKey;
-        await notifier.send('微软积分每日打卡总览报告', summaryMsg);
+        const completionNote = allFinishedToday
+          ? '\n\n✅ 所有账号的全部任务均已满额完成。'
+          : '\n\nℹ️ 本轮流程已结束，但仍有未满额任务（如每周任务或按天解锁任务），将在后续调度中继续推进。';
+        await notifier.send('微软积分每日打卡总览报告', summaryMsg + completionNote);
       }
       return true;
     } catch (e) {
@@ -1351,11 +1396,15 @@ export class TaskManager {
     } finally {
       this.running = false;
       this.runningAccountId = null;
+      this.runTicket = 0;
+      this.runPhase = 'idle';
+      this.runPhaseDetail = '本轮执行已结束';
       logger.setAccountContext('');
-      accountContextLock.release('task-run');
-      // 任务结束：关闭共享抓取浏览器，释放内存
       try { await browserManager.closeSharedFetcher(); } catch {}
-      // 任务级内存峰值快照（tini 回收僵尸后再看这个数字才准确）
+      try { await browserManager.closeBrowser(); } catch {}
+      if (!accountContextLock.releaseExclusive('task-run', runTicket)) {
+        logger.log('🟡', '任务租约释放未匹配，可能有旧执行流试图释放新任务');
+      }
       try { memorySampler.commitRun('task-run'); } catch {}
     }
   }

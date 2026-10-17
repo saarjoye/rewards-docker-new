@@ -27,6 +27,7 @@ class BrowserManager extends EventEmitter {
     this.browser = null;
     this.context = null;
     this.page = null;
+    this.liveBrowsers = new Set();
     this.shouldStop = false;
     // 是否持有浏览器资源锁（由 launchBrowser/closeBrowser 维护）
     this.slotHeld = false;
@@ -351,6 +352,8 @@ class BrowserManager extends EventEmitter {
       this.browser = browser;
       this.context = context;
       this.sessionAccount = acc || null;
+      this.liveBrowsers.add(browser);
+      browser.once('disconnected', () => this.liveBrowsers.delete(browser));
       return { browser, context };
     } catch (e) {
       // 启动过程中失败也必须把锁还回去，否则后续所有浏览器任务都会被卡住
@@ -507,6 +510,8 @@ class BrowserManager extends EventEmitter {
         const cookies = this.parseCookies(acc.cookie, '.bing.com');
         await this.addCookiesSafely(context, cookies, acc?.name);
       }
+      this.liveBrowsers.add(browser);
+      browser.once('disconnected', () => this.liveBrowsers.delete(browser));
       this.sharedFetcher = { browser, context, lastUsedAt: Date.now(), slotHeld: true };
       return this.sharedFetcher;
     } catch (e) {
@@ -633,6 +638,8 @@ class BrowserManager extends EventEmitter {
         const cookies = this.parseCookies(acc.cookie, '.bing.com');
         await this.addCookiesSafely(context, cookies, acc?.name);
       }
+      this.liveBrowsers.add(browser);
+      browser.once('disconnected', () => this.liveBrowsers.delete(browser));
       const page = await context.newPage();
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(err => {
         logger.log('🟡', `页面导航异常: ${err.message}`);
@@ -676,23 +683,70 @@ class BrowserManager extends EventEmitter {
   async closeBrowser() {
     try {
       if (this.context) await this.context.close().catch(() => {});
-      if (this.browser) await this.browser.close().catch(() => {});
+      if (this.page) await this.page.close().catch(() => {});
     } catch {}
+    const browsers = new Set(this.liveBrowsers);
+    if (this.browser) browsers.add(this.browser);
+    await Promise.allSettled([...browsers].map(b => b.close().catch(() => {})));
+    this.liveBrowsers.clear();
     this.browser = null;
     this.context = null;
     this.page = null;
     this.cdpSessions = [];
     this.sessionAccount = null;
     this.releaseBrowserSlot();
+    await this.reapResidualChromium();
+    await new Promise(r => setTimeout(r, 500));
+    const residual = this.countResidualChromium();
     this.updateState({
       status: 'idle',
       activeAccountId: null,
       activeAccountName: '未启动',
       currentQuery: '',
       nextSearchIn: 0,
-      memoryMB: 0,
-      lastAction: '浏览器已彻底关闭，内存完全释放 (0 内存占用)'
+      memoryMB: residual > 0 ? Math.max(1, residual) : 0,
+      lastAction: residual > 0
+        ? `浏览器对象已关闭，但容器内仍有 ${residual} 个 Chromium 进程，正在等待系统回收`
+        : '浏览器已彻底关闭，内存完全释放 (0 内存占用)'
     });
+  }
+
+  countResidualChromium() {
+    try {
+      let browsers = 0;
+      for (const name of fs.readdirSync('/proc')) {
+        if (!/^\d+$/.test(name)) continue;
+        const cmdline = fs.readFileSync(`/proc/${name}/cmdline`, 'utf8');
+        if (cmdline.includes('chromium') && !cmdline.includes('--type=')) browsers += 1;
+      }
+      return browsers;
+    } catch {
+      return 0;
+    }
+  }
+
+  async reapResidualChromium() {
+    if (this.reaping) return;
+    this.reaping = true;
+    try {
+      const pids = [];
+      for (const name of fs.readdirSync('/proc')) {
+        if (!/^\d+$/.test(name)) continue;
+        const cmdline = fs.readFileSync(`/proc/${name}/cmdline`, 'utf8');
+        if (cmdline.includes('playwright_chromiumdev_profile-') && !cmdline.includes('--type=')) pids.push(Number(name));
+      }
+      for (const pid of pids) {
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+      }
+      if (pids.length > 0) {
+        await new Promise(r => setTimeout(r, 1500));
+        for (const pid of pids) {
+          try { process.kill(pid, 'SIGKILL'); } catch {}
+        }
+      }
+    } catch {} finally {
+      this.reaping = false;
+    }
   }
 
   delay(ms) {

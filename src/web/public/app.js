@@ -1523,15 +1523,24 @@ function renderGlobalRunBanner(data = {}) {
 
   const accountId = data.runningAccountId || accountLock.accountId || data.selectedAccountId || '';
   const account = (data.summary?.accountsList || []).find(a => a.id === accountId);
-  let detail = meta.detail;
-  if (account?.name) {
-    detail += ' · 当前账号：' + account.name;
-  } else if (data.running && !accountId) {
-    detail += ' · 全部账号汇总';
-  }
-  if (!accountOwner && browserOwner) {
-    const browserMeta = describeRunOwner(browserOwner);
-    detail = browserMeta.detail;
+  const queue = Array.isArray(data.runQueue) ? data.runQueue : [];
+  const queueIndex = Number.isInteger(data.runQueueIndex) ? data.runQueueIndex : -1;
+  const currentAccount = queue[queueIndex] || account || null;
+  const nextAccount = queue[queueIndex + 1] || null;
+  const isTaskRun = accountOwner === 'task-run' || data.running;
+
+  let detail = '';
+  if (isTaskRun) {
+    detail = data.runPhaseDetail || meta.detail;
+    if (currentAccount?.name) detail += ' · 当前账号：' + currentAccount.name;
+    if (nextAccount?.name) detail += ' · 下一账号：' + nextAccount.name;
+  } else {
+    detail = meta.detail;
+    if (account?.name) detail += ' · 当前账号：' + account.name;
+    if (!accountOwner && browserOwner) {
+      const browserMeta = describeRunOwner(browserOwner);
+      detail = browserMeta.detail;
+    }
   }
 
   const heldMs = accountOwner ? accountLock.heldMs : browserLock.heldMs;

@@ -1,18 +1,11 @@
 /**
  * 账号上下文锁
  *
- * 这个项目的账号上下文（networkClient.activeCookie / rewardsApi.currentAccountId /
- * logger 的账号前缀）是「全局可变状态」：谁最后调用 setCurrentAccount，后续所有
- * 请求就都算在谁头上。
+ * 账号上下文（networkClient.activeCookie / rewardsApi.currentAccountId / logger 账号前缀）
+ * 是全局可变状态，因此所有会切换账号的流程必须串行。
  *
- * 于是出现过一个隐蔽的多账号串号问题：定时任务正在跑账号 A 的搜索时，如果恰好有人
- * 打开/刷新 WebUI（页面加载会自动调 /api/status/sync）或点了「体检」「单次测搜」，
- * 那些接口会调用 setCurrentAccount(账号 B)，把全局上下文切到 B —— 结果 A 的后续
- * 搜索、卡片领取、阅读上报全部记到了 B 头上（日志也会串台）。
- *
- * 这里用一把「按持有者标识可重入」的锁来串行化所有会改写账号上下文的流程：
- *   - 定时/手动任务执行持有 'task-run'，内部嵌套调用传同一个标识即可重入；
- *   - WebUI 的同步 / 体检 / 测搜在锁被占用时直接跳过，绝不抢占上下文。
+ * 普通锁按 owner 可重入；任务执行入口则使用带票据的独占租约，确保即使两个请求
+ * 同时到达，也只有一个 runAll 能启动。
  */
 export class AccountContextLock {
   constructor() {
@@ -21,13 +14,11 @@ export class AccountContextLock {
     this.acquiredAt = 0;
     this.lastOwner = null;
     this.lastReleasedAt = 0;
+    this.ticket = 0;
   }
 
   /**
-   * 是否被占用。附带「卡死锁」自愈：
-   * owner='task-run' 且已持有超过 4 小时（任务最长 3 小时窗口 + 余量），
-   * 或 owner='web-sync/web-action' 且超过 10 分钟，就判定为异常残留并强制释放。
-   * 这是防御性兜底：正常路径都在 finally 里 release，不应触发。
+   * 是否被占用。持有超时后自动释放，作为异常残留的防御性兜底。
    */
   isBusy() {
     if (this.owner) {
@@ -41,25 +32,23 @@ export class AccountContextLock {
     return this.owner !== null;
   }
 
-  /** 当前持有者标识（未占用时为 null） */
   currentOwner() {
     return this.owner;
   }
 
-  /** 诊断快照：用于排查「明明没跑任务却说正在执行」 */
   snapshot() {
     return {
       owner: this.owner,
       depth: this.depth,
       heldMs: this.owner ? Date.now() - this.acquiredAt : 0,
       lastOwner: this.lastOwner,
-      lastReleasedAt: this.lastReleasedAt
+      lastReleasedAt: this.lastReleasedAt,
+      ticket: this.ticket
     };
   }
 
   /**
-   * 非阻塞获取。同一个 owner 重复获取视为重入，直接成功。
-   * @returns {boolean} 是否拿到（或本来就持有）
+   * 非阻塞获取。同一 owner 重复获取是重入。
    */
   tryAcquire(owner) {
     if (this.owner !== null && this.owner !== owner) return false;
@@ -69,9 +58,6 @@ export class AccountContextLock {
     return true;
   }
 
-  /**
-   * 带超时的阻塞获取。用于任务执行入口：短暂等待 WebUI 的同步流程收尾。
-   */
   async acquire(owner, timeoutMs = 60000) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -81,14 +67,10 @@ export class AccountContextLock {
     }
   }
 
-  /**
-   * 释放。注意：owner 不匹配时不做任何事（避免误释放别人的锁），
-   * 但会记录一次异常，便于发现 acquire/release 不成对。
-   */
   release(owner) {
     if (this.owner !== owner) {
       this.lastMismatch = { expected: this.owner, got: owner, at: Date.now() };
-      return;
+      return false;
     }
     this.depth -= 1;
     if (this.depth <= 0) {
@@ -98,28 +80,59 @@ export class AccountContextLock {
       this.lastOwner = owner;
       this.lastReleasedAt = Date.now();
     }
+    return true;
   }
 
   /**
-   * 强制释放（仅供诊断/恢复用）。正常情况下不应被调用。
+   * 独占租约（不可重入），用于任务执行入口。
+   * 票据确保旧执行流不能释放后来者的锁。
    */
+  tryAcquireExclusive(owner) {
+    if (this.owner !== null) {
+      return { acquired: false, owner: this.owner, ticket: this.ticket };
+    }
+    this.owner = owner;
+    this.depth = 1;
+    this.acquiredAt = Date.now();
+    this.ticket += 1;
+    return { acquired: true, owner, ticket: this.ticket };
+  }
+
+  releaseExclusive(owner, ticket) {
+    if (this.owner !== owner || this.ticket !== ticket || this.depth !== 1) {
+      this.lastMismatch = {
+        expected: this.owner,
+        got: owner,
+        expectedTicket: this.ticket,
+        gotTicket: ticket,
+        at: Date.now()
+      };
+      return false;
+    }
+    this.depth = 0;
+    this.owner = null;
+    this.acquiredAt = 0;
+    this.lastOwner = owner;
+    this.lastReleasedAt = Date.now();
+    return true;
+  }
+
   forceRelease(reason = 'manual') {
-    const prev = { owner: this.owner, depth: this.depth, heldMs: this.acquiredAt ? Date.now() - this.acquiredAt : 0 };
+    const prev = {
+      owner: this.owner,
+      depth: this.depth,
+      heldMs: this.acquiredAt ? Date.now() - this.acquiredAt : 0
+    };
     this.owner = null;
     this.depth = 0;
     this.acquiredAt = 0;
+    this.ticket += 1;
     this.lastForceRelease = { ...prev, reason, at: Date.now() };
     return prev;
   }
 }
 
+/** 浏览器资源锁与账号上下文锁彼此独立。 */
 export const accountContextLock = new AccountContextLock();
-/**
- * 浏览器资源锁：Chromium 很吃内存，NAS 上同时跑两个实例容易 OOM。
- * 积分任务的搜索/打孔卡与 Epic 领取共用这一把锁，保证同一时刻只有一个浏览器在跑。
- * 与 accountContextLock 是两件不同的事，不要合并：
- *   - accountContextLock 保护「全局账号上下文」，只在积分任务内部使用；
- *   - browserSlotLock 保护「浏览器这个重资源」，跨模块共用。
- */
 export const browserSlotLock = new AccountContextLock();
 export default accountContextLock;
