@@ -95,7 +95,7 @@ test('官网同步：官网明确给出今日积分 0 时，应如实写入 0', 
   }
 });
 
-test('官网同步：取不到今日积分时可用余额差补算今日已增', async () => {
+test('官网同步：取不到今日积分时不得用余额差改写今日已增', async () => {
   const tm = new TaskManager();
   const accId = 'acc_earned_delta';
   const accCfg = { id: accId, name: '余额差测试', cookie: 'MOCK_COOKIE' };
@@ -112,8 +112,8 @@ test('官网同步：取不到今日积分时可用余额差补算今日已增',
   try {
     await tm.syncAccountOfficialStatus(accCfg, { owned: true });
     const st = tm.ensureAccountStats(accId);
-    assert.equal(st.earned, 30, '取不到官网今日积分时应回退到余额差');
-    assert.equal(st.earnedSource, 'balance-delta');
+    assert.notEqual(st.earned, 30, '余额差不得写入今日已增');
+    assert.equal(st.earned, 0, '从未读到官网值时应保持 0');
   } finally {
     restore();
   }

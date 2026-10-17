@@ -536,13 +536,54 @@ class BrowserManager extends EventEmitter {
   }
 
   async fetchPageHtml(acc, url) {
-    const { browser, context, page } = await this.withTemporaryPage(acc, url);
+    const f = await this.acquireSharedFetcher(acc);
+    if (f.lastAccountId !== acc?.id) {
+      // 换账号时更新 Cookie
+      await f.context.clearCookies().catch(() => {});
+      if (acc?.cookie) {
+        const cookies = this.parseCookies(acc.cookie, '.bing.com');
+        await this.addCookiesSafely(f.context, cookies, acc?.name).catch(() => {});
+      }
+      f.lastAccountId = acc?.id;
+    }
+    f.lastUsedAt = Date.now();
+    this.scheduleSharedFetcherCleanup();
+
+    const page = await f.context.newPage();
     try {
-      return await page.content();
+      let lastError = null;
+      // 最多 3 次：微软页面是客户端水合渲染，domcontentloaded 时尚未出现目标数字，
+      // 必须等到「今日积分/每日连续打卡/可领取/可用积分」后真的出现 text-pageHeader 数值。
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await page.waitForFunction(() => {
+            const labels = ['今日积分', '每日连续打卡', '可领取', '可用积分'];
+            const nodes = [...document.querySelectorAll('p')];
+            return labels.some(label => {
+              const hit = nodes.find(n => (n.textContent || '').trim() === label);
+              if (!hit) return false;
+              let box = hit;
+              for (let i = 0; i < 5 && box; i++) {
+                const head = box.querySelector && box.querySelector('p.text-pageHeader');
+                if (head && /\d/.test(head.textContent || '')) return true;
+                box = box.parentElement;
+              }
+              return false;
+            });
+          }, { timeout: 20000 }).catch(() => {});
+          await page.waitForTimeout(1200);
+          const html = await page.content();
+          if (html.includes('今日积分') || html.includes('可领取')) return html;
+          lastError = new Error(`页面未渲染出目标数据（第 ${attempt} 次，${html.length} 字节）`);
+        } catch (e) {
+          lastError = e;
+        }
+        await page.waitForTimeout(1500);
+      }
+      throw lastError || new Error('页面渲染超时');
     } finally {
-      await context.close().catch(() => {});
-      // 关键：必须关闭 browser 进程，否则每次同步都会泄漏一个 Chromium（数百 MB）
-      await browser.close().catch(() => {});
+      await page.close().catch(() => {});
     }
   }
 

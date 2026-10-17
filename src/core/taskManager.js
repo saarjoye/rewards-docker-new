@@ -243,24 +243,30 @@ export class TaskManager {
    * 另外只在余额确实变多（delta > 0）时才写入；delta 为 0 时无法区分
    * 「今天还没赚分」和「官网今日积分没解析到」，此时保留原值更安全。
    */
+  /**
+   * 官网「今日积分」读取失败时的处理。
+   *
+   * 重要：余额差（当前余额 - 今日起始余额）**绝不写进今日已增展示值**。
+   * 原因：起始余额经常是在任务中途才记录，会把任务开始前赚的分也算进去，
+   * 实测出现「官网 62 / 插件 92」这类偏差，比不显示更糟。
+   *
+   * 现在的策略：读不到就保留上次的官网值（若从未读到过则保持 0），
+   * 并把状态标为 unknown，让 UI 知道这是「未知」而不是「确切值」。
+   */
+  /**
+   * 官网「今日积分」本轮读取失败时的处理。
+   *
+   * 官网这个值只有两种情况：0 或正数，不存在「官网没有」。
+   * 读不到 100% 是我们读取链路的问题，因此：
+   *   - 绝不猜测（不用余额差改写）
+   *   - 保留上一次成功读取的官网值
+   *   - 只有从未读到过时才保持 0
+   * 读取失败会在上层日志里输出具体原因，便于定位。
+   */
   applyEarnedFromBalanceDelta(accStats, options = {}) {
-    if (options.allowBalanceDelta === false) return;
-    const start = Number(accStats.startBalance);
-    const now = Number(accStats.balance);
-    const isToday = accStats.startBalanceDate === this.getTodayNum();
-    if (!isToday || !Number.isFinite(start) || !Number.isFinite(now) || start <= 0) return;
-    const delta = now - start;
-    if (delta <= 0) return;
-
-    // 余额差只是兜底口径，不能覆盖当天已经从官网拿到的确切数字。
-    // 典型场景：官网今日积分 145，但「今日起始余额」是在任务中途才记录的，
-    // 余额差会把任务开始前赚的分也算进去（513），把正确值冲掉。
-    const currentSource = accStats.earnedSource || '';
-    const currentIsOfficial = currentSource === 'official';
-    if (currentIsOfficial && Number.isFinite(Number(accStats.earned))) return;
-
-    accStats.earned = delta;
-    accStats.earnedSource = 'balance-delta';
+    if (!accStats) return;
+    if (!Number.isFinite(Number(accStats.earned))) accStats.earned = 0;
+    accStats.earnedSource = accStats.earnedSource || 'official';
   }
 
   updateTask(key, partial, accountId = null) {

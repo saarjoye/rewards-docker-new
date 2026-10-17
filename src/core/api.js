@@ -496,11 +496,15 @@ export class RewardsApi {
       const { default: browserManager } = await import('./browser.js');
       const acc = configManager.resolveAccount(this.currentAccountId);
       const html = await browserManager.fetchEarnPageHtml(acc);
-      if (html && String(html).length > 100000) {
-        logger.log('🌐', `已用浏览器抓取 /earn（${Math.round(String(html).length / 1024)} KB）`);
+      // 判定标准不是字节数，而是「目标数据是否真的存在」：
+      // 今日积分/连续签到/可用积分 三者至少有一个带数值。
+      if (html && (this.parseLabeledHeaderValue(html, '今日积分') !== null
+        || this.parseLabeledHeaderValue(html, '每日连续打卡') !== null
+        || this.parseLabeledHeaderValue(html, '可用积分') !== null)) {
+        logger.log('🌐', `已用浏览器抓取 /earn（${Math.round(String(html).length / 1024)} KB，含目标数据）`);
         return { html, source: 'browser' };
       }
-      logger.log('🟡', `浏览器抓取 /earn 只有 ${String(html || '').length} 字节，判定为不完整，回退 HTTP`);
+      logger.log('🟡', `浏览器抓取 /earn 未解析出目标数值（${String(html || '').length} 字节），回退 HTTP`);
     } catch (e) {
       logger.log('🟡', `浏览器抓取 /earn 失败，回退 HTTP: ${e.message}`);
     }
@@ -528,11 +532,13 @@ export class RewardsApi {
       const { default: browserManager } = await import('./browser.js');
       const acc = configManager.resolveAccount(this.currentAccountId);
       const html = await browserManager.fetchPageHtml(acc, 'https://rewards.bing.com/dashboard');
-      if (html && String(html).length > 100000) {
-        logger.log('🌐', `已用浏览器抓取 /dashboard（${Math.round(String(html).length / 1024)} KB）`);
+      // 同样以「目标数据是否存在」为准，而不是字节数
+      if (html && (this.parseLabeledHeaderValue(html, '可领取') !== null
+        || this.parseLabeledHeaderValue(html, '可用积分') !== null)) {
+        logger.log('🌐', `已用浏览器抓取 /dashboard（${Math.round(String(html).length / 1024)} KB，含目标数据）`);
         return { html, source: 'browser' };
       }
-      logger.log('🟡', `浏览器抓取 /dashboard 只有 ${String(html || '').length} 字节，判定为不完整，回退 HTTP`);
+      logger.log('🟡', `浏览器抓取 /dashboard 未解析出目标数值（${String(html || '').length} 字节），回退 HTTP`);
     } catch (e) {
       logger.log('🟡', `浏览器抓取 /dashboard 失败，回退 HTTP: ${e.message}`);
     }
