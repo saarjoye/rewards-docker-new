@@ -1362,10 +1362,9 @@ export class RewardsApi {
     };
 
     try {
-      const html = await networkClient.request({
-        url: 'https://rewards.bing.com/earn',
-        headers: pcPageHeaders()
-      });
+      // 必须用浏览器：axios 直连会被重定向到登录页，只能拿到 34KB 空壳，
+      // 页面里没有 activityCards，必然扫到 0 张。
+      const { html } = await this.fetchEarnHtmlPreferBrowser();
       if (!html) return cards;
 
       // 1. Next.js Flight Chunks 解析

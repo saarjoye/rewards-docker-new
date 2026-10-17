@@ -1061,8 +1061,15 @@ class BrowserManager extends EventEmitter {
     return { attempted, completed, details: completedSteps };
   }
 
-  /**
-   * 打开 rewards.bing.com/dashboard 领取待领取的额外积分
+﻿  /**
+   * 打开 /dashboard，点击「可领取」卡片并完成领取。
+   * 返回实际领取到的积分；未找到可领取入口时返回 0。
+   *
+   * 注意：真实页面卡片结构是
+   *   <p class="text-labelControl">可领取</p>
+   *   <p class="text-pageHeader">3</p>
+   *   <p class="text-metadata">领取</p>
+   * 按钮不一定带「可领取」文案，因此要按多种选择器依次尝试。
    */
   async claimDashboardPoints(acc) {
     const accName = acc?.name || '当前账号';
@@ -1074,38 +1081,91 @@ class BrowserManager extends EventEmitter {
       const { context } = await this.launchBrowser(acc);
       const page = await this.createPage(context);
       await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 45000 });
-      // 等待 React 页面水合完成
-      await this.delay(3500);
+      await page.waitForTimeout(4000);
 
-      // 必须精确锁定 button，不能使用 div:has-text，否则会命中最外层的整个页面根 div 导致点击无效
-      const cardBtn = page.locator('button').filter({ hasText: '可领取' }).first();
-      if ((await cardBtn.count()) > 0) {
-        const text = await cardBtn.innerText().catch(() => '');
-        const m = text.match(/可领取[\s\S]*?(\d+)/) || text.match(/(\d+)/);
-        const pts = m ? parseInt(m[1], 10) : 0;
-        if (pts > 0) {
-          logger.log('🎁', `账号 [${accName}] 发现 ${pts} 点待领取积分，正在触发自动领取...`, '', accName);
-          await cardBtn.click({ timeout: 6000 });
-          await this.delay(2000);
+      // 先从页面读取「可领取 N」
+      let pts = 0;
+      try {
+        const text = await page.evaluate(() => {
+          const nodes = [...document.querySelectorAll('p')];
+          const label = nodes.find(n => (n.textContent || '').trim() === '可领取');
+          if (!label) return '';
+          let box = label;
+          for (let i = 0; i < 5 && box; i++) {
+            const head = box.querySelector && box.querySelector('p.text-pageHeader');
+            if (head) return head.textContent || '';
+            box = box.parentElement;
+          }
+          return '';
+        });
+        const m = String(text || '').match(/(\d[\d,]*)/);
+        if (m) pts = parseInt(m[1].replace(/,/g, ''), 10) || 0;
+      } catch {}
 
-          let hasMore = true;
-          let rounds = 0;
-          while (hasMore && rounds < 5) {
-            rounds++;
-            const confirmBtn = page.locator('div[role="dialog"] button, button').filter({ hasText: /领取积分/ }).first();
-            if ((await confirmBtn.count()) > 0 && await confirmBtn.isVisible().catch(() => false)) {
-              await confirmBtn.click({ timeout: 5000 }).catch(() => {});
-              await this.delay(2500);
+      logger.log('🎁', `账号 [${accName}] 检测到待领取积分: ${pts}（页面结构未命中时为 0）`, '', accName);
+      if (pts <= 0) {
+        await this.closeBrowser();
+        return 0;
+      }
+
+      // 依次尝试多种可点击入口
+      const candidates = [
+        page.getByRole('button', { name: /领取|可领取/ }).first(),
+        page.locator('button').filter({ hasText: /领取|可领取/ }).first(),
+        page.locator('a').filter({ hasText: /领取|可领取/ }).first(),
+        page.locator('[role="button"]').filter({ hasText: /领取|可领取/ }).first()
+      ];
+
+      let clicked = false;
+      for (const locator of candidates) {
+        try {
+          if ((await locator.count()) > 0 && await locator.isVisible().catch(() => false)) {
+            await locator.click({ timeout: 8000 });
+            clicked = true;
+            logger.log('🎁', `已点击领取入口`, '', accName);
+            break;
+          }
+        } catch {}
+      }
+      if (!clicked) {
+        logger.log('🟡', `未找到可点击的领取入口（页面显示 ${pts} 分待领）`, '', accName);
+      }
+
+      // 处理确认弹窗（最多 5 轮）
+      for (let round = 0; round < 5; round++) {
+        await page.waitForTimeout(2500);
+        const confirmCandidates = [
+          page.getByRole('button', { name: /领取积分|确认领取|领取/ }).last(),
+          page.locator('div[role="dialog"] button').last(),
+          page.locator('button').filter({ hasText: /领取积分|确认/ }).last()
+        ];
+        let confirmed = false;
+        for (const locator of confirmCandidates) {
+          try {
+            if ((await locator.count()) > 0 && await locator.isVisible().catch(() => false)) {
+              await locator.click({ timeout: 6000 });
+              confirmed = true;
               claimed = pts;
-            } else {
-              hasMore = false;
+              logger.log('🎉', `账号 [${accName}] 领取成功 +${claimed} 分`, '', accName);
+              break;
             }
-          }
-          if (claimed > 0) {
-            logger.log('🎉', `账号 [${accName}] 成功领取待领积分 +${claimed} 分！`, '', accName);
-          }
+          } catch {}
+        }
+        if (!confirmed) break;
+      }
+
+      // 领取后复核页面上的「可领取」是否归零
+      await page.waitForTimeout(3000);
+      const afterText = await page.content().catch(() => '');
+      if (afterText) {
+        const m = String(afterText).match(/"children"\s*:\s*"可领取"[\s\S]{0,1200}?"children"\s*:\s*"?(\d[\d,]*)/);
+        if (m) {
+          const remaining = parseInt(m[1].replace(/,/g, ''), 10) || 0;
+          logger.log('📊', `领取后页面显示剩余待领: ${remaining}`, '', accName);
+          if (remaining === 0) claimed = pts;
         }
       }
+
       await this.commitBrowserSession();
       await this.closeBrowser();
     } catch (e) {
@@ -1114,6 +1174,7 @@ class BrowserManager extends EventEmitter {
     }
     return claimed;
   }
+
 }
 
 export const browserManager = new BrowserManager();
