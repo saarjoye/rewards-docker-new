@@ -16,6 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV TZ=Asia/Shanghai
 ENV CHROMIUM_PATH=/usr/bin/chromium
 
+# compose 的 init:true 会先注入 docker-init 作为 PID 1，此时镜像内的 tini 成为子进程。
+# 只有注册为 subreaper，tini 才能收养并回收 Chromium 的孤儿进程；
+# 否则它会输出 "Tini is not running as PID 1" 并且完全不起作用（实测）。
+ENV TINI_SUBREAPER=1
+
 WORKDIR /app
 
 # 先复制 package 文件以利用 Docker 层缓存

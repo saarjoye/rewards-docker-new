@@ -9,6 +9,10 @@ import { DATA_DIR, writeFileAtomic } from './fsUtil.js';
 
 const PLAN_FILE = path.join(DATA_DIR, 'schedule_plan.json');
 
+// 计划文件 schema 版本。每次修复调度语义（例如 executed 时序、跳过规则）就 +1，
+// 启动时发现旧版本会整份作废重排，避免旧数据把新逻辑带偏（升级后「一个都不跑」的元凶）。
+const PLAN_SCHEMA = 3;
+
 class Scheduler {
   constructor() {
     this.job = null;
@@ -19,19 +23,31 @@ class Scheduler {
 
   loadPlans() {
     try {
-      if (fs.existsSync(PLAN_FILE)) {
-        const raw = fs.readFileSync(PLAN_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          this.plannedDailyRuns = parsed;
-        }
+      if (!fs.existsSync(PLAN_FILE)) return;
+      const raw = fs.readFileSync(PLAN_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      // 旧版计划没有 schema 字段（或版本不符）→ 整份作废，让新逻辑重新排期。
+      // 否则升级后 executed=true 的残留会让当天所有账号直接跳过。
+      if (parsed.schema !== PLAN_SCHEMA) {
+        console.warn(`[Scheduler] 计划文件版本不符（${parsed.schema ?? 'none'} != ${PLAN_SCHEMA}），已丢弃旧计划重新排期`);
+        this.plannedDailyRuns = {};
+        try { fs.unlinkSync(PLAN_FILE); } catch {}
+        return;
+      }
+      if (parsed.days && typeof parsed.days === 'object') {
+        this.plannedDailyRuns = parsed.days;
       }
     } catch {}
   }
 
   savePlans() {
     try {
-      writeFileAtomic(PLAN_FILE, JSON.stringify(this.plannedDailyRuns, null, 2), {
+      writeFileAtomic(PLAN_FILE, JSON.stringify({
+        schema: PLAN_SCHEMA,
+        savedAt: Date.now(),
+        days: this.plannedDailyRuns
+      }, null, 2), {
         encoding: 'utf-8',
         mode: 0o600
       });
@@ -260,6 +276,8 @@ class Scheduler {
     }
 
     // 每分钟检查一次拟人化时段调度
+    // 诊断：每小时整点记录一次每个账号的调度判定，便于回答「为什么没跑」
+    let lastDiagMinute = -1;
     this.job = cron.schedule('* * * * *', async () => {
       if (taskManager.running) return;
 
@@ -270,7 +288,24 @@ class Scheduler {
       const nowMin = now.getHours() * 60 + now.getMinutes();
       const todayPlans = this.plannedDailyRuns[today] || {};
 
+
       const accounts = configManager.getAccounts().filter(a => a.enabled !== false);
+
+      // 每小时输出一次诊断快照（只读，不改变调度行为）
+      if (nowMin % 60 === 0 && lastDiagMinute !== nowMin) {
+        lastDiagMinute = nowMin;
+        const noCred = accounts.filter(a => !a.cookie && !a.refreshToken).map(a => a.name || a.id);
+        const summary = accounts.map(a => {
+          const pl = todayPlans[a.id];
+          if (!pl) return `${a.name || a.id}:无计划`;
+          if (pl.executed) return `${a.name || a.id}:今日已执行`;
+          if (pl.skipped) return `${a.name || a.id}:窗口已过`;
+          const off = this.minutesIntoWindow(pl.startMin, pl.wraps, nowMin);
+          const inWin = off >= 0 && off < pl.windowLength;
+          return `${a.name || a.id}:${inWin ? '窗口内' : '未到窗口'}(起点${Math.floor(pl.startMin / 60)}:${String(pl.startMin % 60).padStart(2, '0')},偏移${pl.offset}分)`;
+        });
+        logger.log('🕒', `调度诊断 ${String(Math.floor(nowMin / 60)).padStart(2, '0')}:${String(nowMin % 60).padStart(2, '0')} | ${summary.join(' | ')}${noCred.length ? ` | 无凭据:${noCred.join(',')}` : ''}`);
+      }
       for (const acc of accounts) {
         if (!acc.cookie && !acc.refreshToken) continue;
 

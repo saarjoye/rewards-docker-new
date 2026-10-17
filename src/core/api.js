@@ -509,17 +509,30 @@ export class RewardsApi {
           }
         }
 
-        // 官方「今日积分」：earn 页顶部那张卡片直接展示的真实今日增量。
-        // 这是唯一权威的「今日已增」来源，比「各任务积分求和」可靠得多
-        // （旧实现求和会把没做的任务也算进去，实测能虚高几十点）。
-        let todayPoints = Number.isFinite(flyout?.todayPoints) ? flyout.todayPoints : null;
-        if (todayPoints === null) {
-          const todayMatch = clean.match(/"children":"今日积分"[\s\S]{0,1600}?"className":"text-pageHeader","children":"(\d+)"/)
-            || clean.match(/今日积分<\/p>[\s\S]{0,1200}?class="text-pageHeader">(\d+)</);
-          if (todayMatch) {
-            const n = parseInt(todayMatch[1], 10);
-            if (Number.isFinite(n)) todayPoints = n;
+        // 官方「今日积分」：以 rewards.bing.com/earn 页面顶部卡片为准 —— 这才是用户
+        // 在官网上看到的数字。cn.bing.com panelflyout 的 DailyPoint 是另一个计数器，
+        // 实测会出现「官网 145 / flyout 498」的口径差（498 恰好等于余额差），
+        // 因此 flyout 只作为页面解析失败时的兜底，不能再盖过页面值。
+        const normalizedEarn = normalizeFlightFragment(clean);
+        let todayPoints = null;
+        let todayPointsSource = null;
+        const todayMatch = normalizedEarn.match(/"children"\s*:\s*"今日积分"[\s\S]{0,2000}?"className"\s*:\s*"text-pageHeader"[\s\S]{0,200}?"children"\s*:\s*"(\d+)"/)
+          || normalizedEarn.match(/今日积分<\/[^>]+>[\s\S]{0,1200}?class="text-pageHeader"[^>]*>(\d+)</);
+        if (todayMatch) {
+          const n = parseInt(todayMatch[1], 10);
+          if (Number.isFinite(n)) {
+            todayPoints = n;
+            todayPointsSource = 'earn-page';
           }
+        }
+        if (todayPoints === null && Number.isFinite(flyout?.todayPoints)) {
+          todayPoints = flyout.todayPoints;
+          todayPointsSource = 'flyout';
+        }
+        if (todayPointsSource === 'earn-page'
+          && Number.isFinite(flyout?.todayPoints)
+          && flyout.todayPoints !== todayPoints) {
+          logger.log('🟡', `今日积分口径不一致：官网页面 ${todayPoints} / flyout ${flyout.todayPoints}，已采用官网页面值`);
         }
 
         // 如果页面未取到有效余额，尝试通过移动端 DAPI 接口获取真实账户余额
@@ -615,6 +628,7 @@ export class RewardsApi {
         return {
           balance,
           todayPoints,
+          todayPointsSource,
           claimablePoints,
           pc: searchQuotaFound ? { progress: pcCur, max: pcMax } : null,
           mobile: searchQuotaFound ? { progress: mobCur, max: mobMax } : null,

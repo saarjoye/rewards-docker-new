@@ -65,7 +65,7 @@ test('getRewardsInfo 解析官网「今日积分」与余额', async () => {
   });
 });
 
-test('getRewardsInfo 优先使用 cn.bing.com panelflyout 的官方今日积分', async () => {
+test('getRewardsInfo 今日积分以 earn 页面为准，flyout 只作兜底', async () => {
   const flyoutFixture = JSON.stringify({
     userInfo: { balance: 3984 },
     flyoutResult: {
@@ -83,7 +83,7 @@ test('getRewardsInfo 优先使用 cn.bing.com panelflyout 的官方今日积分'
   await withRoutedNetwork({ earn: EARN_FIXTURE, dashboard: '', flyout: flyoutFixture }, async () => {
     const info = await rewardsApi.getRewardsInfo(1);
     assert.ok(info, '应返回解析结果');
-    assert.equal(info.todayPoints, 600, '今日积分应取 panelflyout 的官方实时值');
+    assert.equal(info.todayPoints, 137, '今日积分应以 earn 页面为准（flyout 的 DailyPoint 是另一个口径）');
     assert.equal(info.balance, 3984, '余额应优先取 panelflyout');
     assert.deepEqual(info.pc, { progress: 12, max: 60 }, 'PC 搜索进度应取 panelflyout');
   });
@@ -177,5 +177,41 @@ test('discoverCards 能解析带嵌套字段的卡片对象（旧正则失配回
     assert.equal(cards.length, 1);
     assert.equal(cards[0].offerId, 'ZHstar_Rewards_DailyGlobalOffer_Evergreen_Monday');
     assert.equal(cards[0].kind, 'puzzle');
+  });
+});
+
+test('earn 页面解析不到今日积分时，才回退到 flyout', async () => {
+  const flyoutFixture = JSON.stringify({
+    userInfo: { balance: 3984 },
+    flyoutResult: {
+      userStatus: {
+        availablePoints: 3984,
+        counters: { DailyPoint: [{ pointProgress: 145 }] }
+      }
+    }
+  });
+  const pageWithoutToday = '<html><body><script>self.__next_f.push([1,"a:{\"balance\":3984}"])</script></body></html>';
+  await withRoutedNetwork({ earn: pageWithoutToday, dashboard: '', flyout: flyoutFixture }, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.equal(info.todayPoints, 145, '页面无今日积分时应回退到 flyout');
+    assert.equal(info.todayPointsSource, 'flyout');
+  });
+});
+
+test('earn 页面与 flyout 数值不一致时，以页面为准（官网 145 / flyout 498 回归）', async () => {
+  const flyoutFixture = JSON.stringify({
+    userInfo: { balance: 13430 },
+    flyoutResult: {
+      userStatus: {
+        availablePoints: 13430,
+        counters: { DailyPoint: [{ pointProgress: 498 }] }
+      }
+    }
+  });
+  const page = '<script>self.__next_f.push([1,"x:\"children\":\"今日积分\",\"y\":{\"className\":\"text-pageHeader\",\"children\":\"145\"}"])</script>';
+  await withRoutedNetwork({ earn: page, dashboard: '', flyout: flyoutFixture }, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.equal(info.todayPoints, 145, '必须采用官网页面值，不能被 flyout 的 498 覆盖');
+    assert.equal(info.todayPointsSource, 'earn-page');
   });
 });
