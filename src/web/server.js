@@ -438,7 +438,13 @@ export function createServer() {
   }
 
   function isPublicPath(pathname) {
-    return PUBLIC_PATHS.has(pathname);
+    if (PUBLIC_PATHS.has(pathname)) return true;
+    // 静态资源（js/css/图片/图标/字体等）必须允许公开加载，
+    // 否则未登录时重定向到 HTML 会导致浏览器把 HTML 当作脚本解析抛出 SyntaxError，且造成缓存污染
+    if (/\.(js|css|png|jpg|jpeg|svg|gif|ico|woff2?|map|txt)$/i.test(pathname)) {
+      return true;
+    }
+    return false;
   }
 
   function getAdminFromRequest(req) {

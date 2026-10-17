@@ -3253,3 +3253,85 @@ body {
   .modal-footer { padding: 10px 14px; }
   .tab-btn, .step-nav-item { font-size: 11px; padding: 5px 8px; }
 }
+
+/* ===== 移动端专用响应式适配优化 (解决换行挤压、竖字与排版错乱) ===== */
+@media (max-width: 640px) {
+  .header {
+    padding: 12px 14px;
+    gap: 8px;
+  }
+  .header-top-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .header-right-group {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sys-metrics-pill, .refresh-countdown {
+    width: 100%;
+    justify-content: center;
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+  .header-actions {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 2px;
+  }
+  .header-actions .btn {
+    flex: 1;
+    justify-content: center;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  .theme-toggle-wrap {
+    margin-left: 6px;
+  }
+
+  /* 工具条移动端 2x2 对称网格 */
+  .ms-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .ms-toolbar-scope-badge {
+    align-self: flex-start;
+    white-space: nowrap;
+    width: auto;
+  }
+  .ms-toolbar-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
+  .ms-toolbar-actions .btn {
+    width: 100%;
+    justify-content: center;
+    padding: 8px 6px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* 多账号切换栏横向自动换行 */
+  .account-selector-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap !important;
+    width: 100%;
+  }
+  .account-chip {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: center;
+    font-size: 11.5px;
+    padding: 6px 8px;
+  }
+}

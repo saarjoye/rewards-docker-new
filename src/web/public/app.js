@@ -31,22 +31,7 @@ let guideDraftAccount = {
   tokenTime: 0
 };
 
-document.addEventListener('DOMContentLoaded', () => {
-  initTheme();
-  initUIEvents();
-  initInstantTooltips();
-  startCountdownTimer();
-  fetchStatus();
-  fetchSystemMetrics();
-  fetchBrowserStatus();
-  fetchConfig();
-  fetchHistory(7);
-  initLogStream();
-  loadVersion();
-  setInterval(fetchStatus, 4000); // 4秒轮询一次任务状态
-  setInterval(fetchSystemMetrics, 4000); // 4秒轮询硬件与网络延时
-  setInterval(fetchBrowserStatus, 2500); // 2.5秒轮询无头浏览器状态
-});
+
 
 // 初始化日夜模式与跟随系统
 function initTheme() {
@@ -168,7 +153,7 @@ function showInstantTooltip(target) {
 }
 
 function hideInstantTooltip() {
-  if (instantTooltipEl) instantTooltipEl.classList.remove('visible');
+  if (typeof instantTooltipEl !== 'undefined' && instantTooltipEl) instantTooltipEl.classList.remove('visible');
   instantTooltipTarget = null;
 }
 
@@ -404,7 +389,6 @@ function initUIEvents() {
     stopActionProgressTicker();
     closeModal('epic-action-modal');
   });
-  document.getElementById('btn-epic-action-stop')?.addEventListener('click', stopEpicTask);
 
   // 向导 Modal (默认创建全新账号，绝不覆盖已有账号)
   document.getElementById('btn-guide').addEventListener('click', openGuideModal);
@@ -825,7 +809,6 @@ function initUIEvents() {
     btn.addEventListener('click', () => switchAppTab(btn.getAttribute('data-tab')));
   });
   initLogsModal();
-  switchAppTab(localStorage.getItem('ms_rewards_app_tab') || 'ms', false);
 }
 
 // 切换顶层选项卡：同一时刻只显示一个面板
@@ -1247,10 +1230,17 @@ async function handleDeleteCurrentAccountInModal() {
 // 获取状态并渲染大屏
 async function fetchStatus() {
   try {
-    const res = await fetch(`/api/status?accountId=${selectedAccountId}`).then(r => r.json());
+    const rawRes = await fetch(`/api/status?accountId=${selectedAccountId}`);
+    if (rawRes.status === 401) {
+      window.location.href = '/login.html';
+      return;
+    }
+    const res = await rawRes.json();
     if (res.success && res.data) {
       currentStatus = res.data;
       renderDashboard(res.data);
+    } else if (res.message && res.message.includes('未登录')) {
+      window.location.href = '/login.html';
     }
   } catch (e) {
     console.error('获取状态失败:', e);
@@ -3238,3 +3228,104 @@ window.toggleSubtasks = function(key) {
   box.style.display = isHidden ? 'block' : 'none';
   if (arrow) arrow.innerText = isHidden ? '▲' : '▼';
 };
+
+// ===== 全部历史日志弹窗 =====
+let logsModalEntries = [];
+let logsModalOpen = false;
+
+function initLogsModal() {
+  document.getElementById('btn-open-logs')?.addEventListener('click', openLogsModal);
+  document.getElementById('btn-logout')?.addEventListener('click', async () => {
+    if (!confirm('确定要退出当前管理员登录吗？')) return;
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch {}
+    window.location.href = '/login.html';
+  });
+  document.getElementById('btn-close-logs')?.addEventListener('click', closeLogsModal);
+  document.getElementById('btn-close-logs-btn')?.addEventListener('click', closeLogsModal);
+  document.getElementById('logs-filter')?.addEventListener('input', () => renderLogsModal());
+  document.getElementById('btn-logs-clear')?.addEventListener('click', () => {
+    logsModalEntries = [];
+    renderLogsModal();
+  });
+}
+
+async function openLogsModal() {
+  logsModalOpen = true;
+  openModal('logs-modal');
+  const list = document.getElementById('logs-modal-list');
+  if (list) list.innerHTML = '<div class="logs-empty">正在加载历史日志...</div>';
+  try {
+    const res = await fetch('/api/logs/history?limit=500').then(r => r.json());
+    logsModalEntries = res.success ? (res.data || []) : [];
+  } catch {
+    logsModalEntries = [];
+  }
+  renderLogsModal(true);
+}
+
+function closeLogsModal() {
+  logsModalOpen = false;
+  closeModal('logs-modal');
+}
+
+function renderLogsModal(scrollToBottom = false) {
+  const list = document.getElementById('logs-modal-list');
+  if (!list) return;
+  const filter = (document.getElementById('logs-filter')?.value || '').trim().toLowerCase();
+  const rows = logsModalEntries.filter(e => {
+    if (!filter) return true;
+    return `${e.accountName || ''} ${e.message || ''} ${e.icon || ''}`.toLowerCase().includes(filter);
+  });
+  if (rows.length === 0) {
+    list.innerHTML = `<div class="logs-empty">${logsModalEntries.length === 0 ? '暂无日志' : '没有匹配的日志'}</div>`;
+    return;
+  }
+  list.innerHTML = rows.map(e => `
+    <div class="logs-line">
+      <span class="logs-time">[${escapeHtml(e.fullTime || e.time || '')}]</span>
+      <span>${escapeHtml(e.icon || 'ℹ️')}</span>
+      ${e.accountName ? `<span class="logs-acc">[${escapeHtml(e.accountName)}]</span>` : ''}
+      <span>${escapeHtml(e.message || '')}</span>
+    </div>`).join('');
+
+  const auto = document.getElementById('logs-autoscroll');
+  if (scrollToBottom || auto?.checked) list.scrollTop = list.scrollHeight;
+}
+
+function appendLogToModal(entry) {
+  if (!logsModalOpen || !entry) return;
+  logsModalEntries.push({
+    fullTime: entry.fullTime || '',
+    time: entry.time || '',
+    icon: entry.icon || 'ℹ️',
+    accountName: entry.accountName || '',
+    message: entry.message || ''
+  });
+  if (logsModalEntries.length > 800) logsModalEntries.shift();
+  renderLogsModal();
+}
+
+function bootApp() {
+  initTheme();
+  initUIEvents();
+  initInstantTooltips();
+  startCountdownTimer();
+  fetchStatus();
+  fetchSystemMetrics();
+  fetchBrowserStatus();
+  fetchConfig();
+  fetchHistory(7);
+  initLogStream();
+  loadVersion();
+  setInterval(fetchStatus, 4000);
+  setInterval(fetchSystemMetrics, 4000);
+  setInterval(fetchBrowserStatus, 2500);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootApp);
+} else {
+  bootApp();
+}
