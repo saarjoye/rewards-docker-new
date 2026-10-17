@@ -1014,6 +1014,32 @@ export class RewardsApi {
    * 用于「今天一张可领卡片都没扫到」时区分到底是「今天没有活动」还是
    * 「已经全部完成」，避免旧实现那样无脑把 promos 标成完成。
    */
+  /**
+   * 用独立的身份接口复核网页端登录态。
+   * 返回 true=已登录 / false=明确未登录 / null=无法判断（网络或接口异常）。
+   *
+   * 为什么不看 /earn 页面文本：登录入口文案在正常页面里也存在，
+   * 用它判断会把「页面改版导致找不到 activityCards」误报成「Cookie 失效」。
+   */
+  async probeWebLogin() {
+    try {
+      const raw = await networkClient.request({
+        url: 'https://cn.bing.com/rewards/panelflyout/getuserinfo',
+        headers: pcPageHeaders({ referer: 'https://cn.bing.com/' })
+      });
+      if (!raw) return null;
+      const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!data || typeof data !== 'object') return null;
+      const user = data.userInfo || data.flyoutResult?.userStatus || {};
+      const balance = Number(user.balance ?? user.availablePoints ?? user.totalBalance ?? 0);
+      const ruid = user.ruid ?? user.epuid ?? user.userId ?? user.cimsid ?? null;
+      if (balance > 0 || ruid) return true;
+      return false;
+    } catch {
+      return null;
+    }
+  }
+
   async getActivityCardStatus() {
     try {
       const html = await networkClient.request({
@@ -1029,12 +1055,15 @@ export class RewardsApi {
       const text = normalizeFlightFragment(concatFlightChunks(html));
       const raw = extractJsonArray(text, 'activityCards');
       if (!raw) {
-        const loggedOut = /login\.live\.com|Sign in|登录/i.test(String(html));
+        // 不能用「页面里出现『登录』字样」来判断 Cookie 失效：
+        // /earn 页面本身就包含登录/账号入口文案，实测会把正常页面误报成 not-signed-in。
+        // 正确做法是用独立的身份接口复核登录态（与账号体检同一口径）。
+        const signedIn = await this.probeWebLogin();
         return {
           total: 0,
           completed: 0,
           readable: false,
-          reason: loggedOut ? 'not-signed-in' : 'activity-cards-not-found'
+          reason: signedIn === false ? 'not-signed-in' : 'activity-cards-not-found'
         };
       }
 

@@ -122,13 +122,40 @@ test('getActivityCardStatus 统计 activityCards 完成情况', async () => {
   });
 });
 
-test('getActivityCardStatus 读不到卡片时给出可诊断原因（不再静默返回 null）', async () => {
-  await withStubbedNetwork('<html><body>login.live.com Sign in</body></html>', async () => {
+test('活动卡片读不到时，用独立身份接口判定是否未登录（不再靠页面里的登录字样）', async () => {
+  const origRequest = networkClient.request;
+  networkClient.request = async (options) => {
+    const url = String(options?.url || '');
+    if (url.includes('panelflyout/getuserinfo')) return JSON.stringify({ userInfo: {} });
+    if (url.includes('/earn')) return '<html><body>登录 登录入口 Sign in</body></html>';
+    throw new Error('unexpected ' + url);
+  };
+  try {
     const status = await rewardsApi.getActivityCardStatus();
     assert.equal(status.readable, false);
     assert.equal(status.reason, 'not-signed-in');
-    assert.equal(status.total, 0);
-  });
+  } finally {
+    networkClient.request = origRequest;
+  }
+});
+
+test('页面里出现登录字样但身份接口显示已登录时，不得误报 Cookie 失效', async () => {
+  const origRequest = networkClient.request;
+  networkClient.request = async (options) => {
+    const url = String(options?.url || '');
+    if (url.includes('panelflyout/getuserinfo')) {
+      return JSON.stringify({ userInfo: { balance: 13430, ruid: 'abc' } });
+    }
+    if (url.includes('/earn')) return '<html><body>登录 登录入口 Sign in</body></html>';
+    throw new Error('unexpected ' + url);
+  };
+  try {
+    const status = await rewardsApi.getActivityCardStatus();
+    assert.equal(status.readable, false);
+    assert.equal(status.reason, 'activity-cards-not-found', '已登录时只能是页面结构变化，不能报未登录');
+  } finally {
+    networkClient.request = origRequest;
+  }
 });
 
 test('getActivityCardStatus 页面改版导致找不到 activityCards 时有明确原因', async () => {
