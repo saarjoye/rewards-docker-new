@@ -1837,6 +1837,16 @@ function formatNextRun(sched) {
       return { text: '⏰ 已停用', tip: '该账号已停用，不会自动启动' };
     case 'no-credential':
       return { text: '⏰ 未配凭据', tip: '未配置 Cookie / Token，不会自动启动' };
+    case 'done-today':
+      return {
+        text: '✅ 今日已执行',
+        tip: `今日任务已启动过\n作息窗口：${windowText}\n下次将按明日窗口执行`
+      };
+    case 'window-passed':
+      return {
+        text: '⏭️ 今日窗口已过',
+        tip: `今日 ${windowText} 窗口已结束，本日不再自动启动\n如仍需执行，请点「立即执行」`
+      };
     case 'schedule-off':
       return { text: '⏰ 定时关闭', tip: '后台定时巡检已关闭（可在「配置中心 → 定时巡检」开启）' };
     default:

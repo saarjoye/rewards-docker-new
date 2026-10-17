@@ -1,4 +1,4 @@
-import fs from 'fs';
+﻿import fs from 'fs';
 import path from 'path';
 import cron from 'node-cron';
 import configManager from './config.js';
@@ -66,8 +66,13 @@ class Scheduler {
   }
 
   /**
-   * 为指定日期生成各账号的当日计划（已存在则跳过）。
-   * isToday=true 时，若当前已在窗口内则把偏移推到「现在之后」，避免中途启动立刻开跑。
+   * 为指定日期生成各账号的当日计划。
+   *
+   * 关键规则（v1.7.3 修复）：
+   *   1. 时段配置变了（startHour/endHour）→ 必须重算，否则改了时间永远不生效；
+   *   2. 窗口已过（现在是 14 点、窗口 9-13）→ 标记 skipped，不把当天计划白白耗掉；
+   *   3. 计划只在「真的成功交给任务执行器」后才置 executed=true，
+   *      启动失败要能重试（旧实现先置位再跑，一次地区检测失败就永久跳过当天）。
    */
   ensureDayPlans(dateNum, isToday) {
     const key = String(dateNum);
@@ -81,25 +86,44 @@ class Scheduler {
     const accounts = configManager.getAccounts().filter(a => a.enabled !== false);
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i];
-      if (plans[acc.id]) continue;
-
       const slot = acc.timeSlot || configManager.getDefaultTimeSlot(i);
-      const startHour = slot.startHour ?? 9;
-      const endHour = slot.endHour ?? ((startHour + 4) % 24);
+      const startHour = Number(slot.startHour ?? 9);
+      const endHour = Number(slot.endHour ?? ((startHour + 4) % 24));
       const startMin = startHour * 60;
       const endMin = endHour * 60;
       // 支持跨零点窗口（例如 22:00 - 02:00）
       const wraps = endMin <= startMin;
       const windowLength = wraps ? (1440 - startMin + endMin) : (endMin - startMin);
 
+      const existing = plans[acc.id];
+      // 配置变更检测：时段变了就丢弃旧计划重排
+      if (existing && (existing.startMin !== startMin || existing.endMin !== endMin)) {
+        delete plans[acc.id];
+      }
+      if (plans[acc.id]) continue;
+
       // 窗口内随机偏移 0 ~ randomDelayMin 分钟
-      const maxDelay = Math.max(1, Math.min(59, slot.randomDelayMin || 60));
+      const maxDelay = Math.max(1, Math.min(59, Number(slot.randomDelayMin) || 60));
       let offset = Math.floor(Math.random() * maxDelay);
 
       if (isToday) {
-        // 容器在窗口中途启动时不要立刻开跑，仍然随机延后 1~20 分钟（保持拟人化）
         const nowOffset = this.minutesIntoWindow(startMin, wraps, nowMin);
-        if (nowOffset >= offset && nowOffset < windowLength) {
+        const inWindow = nowOffset >= 0 && nowOffset < windowLength;
+        // 当天窗口已经过去（例如现在是 15:00，窗口 9-13）→ 今天不再排，
+        // 明确记录 skipped，避免 UI 一直显示「即将启动」却永远不跑。
+        if (!inWindow && nowOffset >= windowLength) {
+          plans[acc.id] = {
+            startMin, endMin, wraps, windowLength,
+            offset,
+            executed: false,
+            skipped: true,
+            skippedReason: 'window-passed',
+            plannedAt: this.planTimestamp(dateNum, { startMin, offset }).valueOf()
+          };
+          continue;
+        }
+        // 容器在窗口中途启动时不要立刻开跑，仍然随机延后 1~20 分钟（保持拟人化）
+        if (inWindow && nowOffset >= offset) {
           offset = Math.min(windowLength - 1, nowOffset + 1 + Math.floor(Math.random() * 20));
         }
       }
@@ -110,7 +134,9 @@ class Scheduler {
         wraps,
         windowLength,
         offset,
-        executed: false
+        executed: false,
+        skipped: false,
+        plannedAt: this.planTimestamp(dateNum, { startMin, offset }).valueOf()
       };
     }
     this.savePlans();
@@ -144,6 +170,7 @@ class Scheduler {
    * 返回 { [accountId]: { status, minutesUntil, nextRunAt, windowStart, windowEnd } }
    * status: scheduled(已排定) / imminent(即将启动)
    *         / no-credential(未配凭据) / disabled(账号停用) / schedule-off(定时关闭)
+   *         / done-today(今日已完成) / window-passed(今日窗口已过)
    */
   getNextRunInfo() {
     const cfg = configManager.get();
@@ -187,10 +214,8 @@ class Scheduler {
         const tomorrowPlan = tomorrowPlans[acc.id];
         let nextAt = null;
 
-        if (todayPlan && !todayPlan.executed) {
-          // 跨零点窗口处于凌晨尾部时，窗口起点在昨天
-          const baseDayOffset = (todayPlan.wraps && nowMin < todayPlan.endMin) ? -1 : 0;
-          const plannedAt = this.planTimestamp(today, todayPlan, baseDayOffset);
+        if (todayPlan && !todayPlan.executed && !todayPlan.skipped) {
+          const plannedAt = todayPlan.plannedAt || this.planTimestamp(today, todayPlan);
           if (plannedAt > now.getTime()) {
             nextAt = plannedAt;
           } else {
@@ -199,14 +224,23 @@ class Scheduler {
             if (inWindow) nextAt = now.getTime(); // 窗口内，调度器下一分钟启动
           }
         }
+        // 今天已经跑过 / 今天窗口已过 → 直接给明天的确切时间
         if (nextAt === null && tomorrowPlan) {
-          nextAt = this.planTimestamp(tomorrow, tomorrowPlan, 0);
+          nextAt = tomorrowPlan.plannedAt || this.planTimestamp(tomorrow, tomorrowPlan, 0);
+        }
+
+        if (todayPlan?.executed) {
+          info.status = 'done-today';
+        } else if (todayPlan?.skipped) {
+          info.status = 'window-passed';
         }
 
         if (nextAt !== null) {
           info.nextRunAt = nextAt;
           info.minutesUntil = Math.max(0, Math.round((nextAt - now.getTime()) / 60000));
-          info.status = info.minutesUntil <= 0 ? 'imminent' : 'scheduled';
+          if (!info.status || info.status === 'unknown') {
+            info.status = info.minutesUntil <= 0 ? 'imminent' : 'scheduled';
+          }
         }
       }
       result[acc.id] = info;
@@ -241,21 +275,33 @@ class Scheduler {
         if (!acc.cookie && !acc.refreshToken) continue;
 
         const plan = todayPlans[acc.id];
-        if (!plan || plan.executed) continue;
+        if (!plan || plan.executed || plan.skipped) continue;
 
         // 距离窗口起点的分钟数（跨零点窗口也能正确计算）
         const nowOffset = this.minutesIntoWindow(plan.startMin, plan.wraps, nowMin);
 
         const inWindow = nowOffset >= 0 && nowOffset < plan.windowLength;
         if (inWindow && nowOffset >= plan.offset) {
-          plan.executed = true;
-          this.savePlans();
           const fmt = (m) => `${String(Math.floor((m % 1440) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
           logger.log('⏰', `到达账号 [${acc.name}] 拟人作息窗口 (${fmt(plan.startMin)} - ${fmt(plan.endMin)}，今日随机命中 ${fmt(plan.startMin + plan.offset)})，启动打卡...`, '', acc.name);
+          // 注意：先不落盘 executed=true。等 runAll 真正开始执行（返回 true）后再置位，
+          // 否则一次地区检测失败 / 锁超时就会让该账号当天永久跳过。
+          let ok = false;
           try {
-            await taskManager.runAll(false, acc.id);
+            ok = await taskManager.runAll(false, acc.id);
           } catch (e) {
             logger.log('🔴', `定时任务执行异常: ${e.message}`, '', acc.name);
+          }
+          if (ok) {
+            plan.executed = true;
+            this.savePlans();
+          } else {
+            // 失败：保持未执行，但把 offset 往后推 15~25 分钟再重试，
+            // 避免同一分钟反复失败刷屏。
+            plan.offset = Math.min(plan.windowLength - 1, plan.offset + 15 + Math.floor(Math.random() * 10));
+            plan.plannedAt = this.planTimestamp(today, plan).valueOf();
+            this.savePlans();
+            logger.log('🟡', `账号 [${acc.name}] 本次启动未成功，已推迟到 ${fmt(plan.startMin + plan.offset)} 重试`, '', acc.name);
           }
           break; // 一次只启动一个账号，保持单队列
         }
@@ -297,7 +343,7 @@ class Scheduler {
       }
     });
 
-    logger.log('🎮', `Epic 免费游戏自动领取已就绪（每 ${settings.checkIntervalMin} 分钟检查一次，失败重试 ${settings.retryCount} 次）`);
+    logger.log('🎮', `Epic 免费游戏自动领取已就绪（每 ${settings.checkIntervalMin} 分钟检查一次，失败重试 ${s.retryCount} 次）`);
   }
 
   stop() {
