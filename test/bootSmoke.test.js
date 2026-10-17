@@ -13,8 +13,7 @@ test('调度器可以完整启动（防止启动期 ReferenceError）', async ()
   const { default: configManager } = await import('../src/config.js');
 
   configManager.update({
-    schedule: { enabled: true },
-    epic: { enabled: true, checkIntervalMin: 30, retryCount: 2, accounts: [] }
+    schedule: { enabled: true }
   });
 
   // 不应该抛异常

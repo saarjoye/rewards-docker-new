@@ -13,7 +13,6 @@ import scheduler from '../scheduler.js';
 import rewardsApi from '../core/api.js';
 import historyManager from '../core/history.js';
 import browserManager from '../core/browser.js';
-import epicManager from '../core/epic.js';
 import memorySampler from '../core/memorySampler.js';
 import { accountContextLock } from '../core/contextLock.js';
 import {
@@ -875,7 +874,7 @@ export function createServer() {
   app.post('/api/tasks/claim-points', async (req, res) => {
     try {
       const accountId = req.body?.accountId || 'all';
-      if (process.env.EPIC_DEMO === '1' || process.env.MSR_DEMO === '1') {
+      if (process.env.MSR_DEMO === '1') {
         let totalClaimed = 0;
         const accounts = configManager.getAccounts();
         const targets = accountId === 'all' ? accounts : accounts.filter(a => a.id === accountId);
@@ -1195,154 +1194,6 @@ export function createServer() {
     const accountId = req.query.accountId || 'all';
     const history = historyManager.getHistory(days, accountId, taskManager.stats);
     res.json({ success: true, data: history });
-  });
-
-  // ===== Epic 免费游戏领取 =====
-
-  app.get('/api/epic/accounts', (req, res) => {
-    const accounts = configManager.getEpicAccounts().map(a => {
-      const summary = epicManager.summarizeSession(a.storageState);
-      return {
-        id: a.id,
-        name: a.name,
-        order: a.order,
-        enabled: a.enabled !== false,
-        hasSession: summary.cookieCount > 0,
-        cookieCount: summary.cookieCount,
-        hasEpicSession: summary.hasEpicSession,
-        sessionValid: a.sessionValid ?? null,
-        handledGameIds: Object.keys(a.handledGames || {}),
-        handledGames: a.handledGames || {},
-        lastVerifyAt: a.lastVerifyAt || 0,
-        lastVerifyMessage: a.lastVerifyMessage || '',
-        lastClaimAt: a.lastClaimAt || 0,
-        lastClaimMessage: a.lastClaimMessage || ''
-      };
-    });
-    res.json({ success: true, data: accounts });
-  });
-
-  app.post('/api/epic/accounts', (req, res) => {
-    try {
-      const saved = configManager.upsertEpicAccount(req.body || {});
-      res.json({ success: true, data: { id: saved.id } });
-    } catch (e) {
-      res.status(400).json({ success: false, message: e.message });
-    }
-  });
-
-  app.delete('/api/epic/accounts/:id', (req, res) => {
-    const ok = configManager.deleteEpicAccount(req.params.id);
-    res.json({ success: ok, message: ok ? '账号已删除' : '账号不存在' });
-  });
-
-  // 导入会话（Cookie-Editor JSON / storageState / 原始 Cookie 串）
-  app.post('/api/epic/accounts/:id/session', (req, res) => {
-    try {
-      if (epicManager.running || epicManager.verifying || epicManager.checking) {
-        return res.status(409).json({ success: false, message: 'Epic 任务正在运行中，请先点击停止按钮，再更新会话' });
-      }
-      const acc = configManager.findEpicAccount(req.params.id);
-      if (!acc) return res.status(404).json({ success: false, message: '账号不存在' });
-      const storageState = epicManager.parseSessionInput(req.body?.session);
-      const summary = epicManager.summarizeSession(storageState);
-      configManager.updateEpicAccount(acc.id, {
-        storageState,
-        sessionValid: null,
-        lastVerifyAt: 0,
-        lastVerifyMessage: '',
-        lastSessionImportAt: Date.now()
-      });
-      logger.log('🎮', `Epic 账号 [${acc.name}] 会话已导入（${summary.cookieCount} 个 Cookie${summary.hasEpicSession ? '，包含 Epic 登录凭据' : '，⚠️ 未检测到 EPIC 登录 Cookie'}）`, '', acc.name);
-      res.json({ success: true, data: summary });
-    } catch (e) {
-      res.status(400).json({ success: false, message: e.message });
-    }
-  });
-
-  app.post('/api/epic/accounts/:id/verify', async (req, res) => {
-    try {
-      const result = await epicManager.verifySession(req.params.id);
-      res.json({ success: true, data: result });
-    } catch (e) {
-      res.status(500).json({ success: false, message: e.message });
-    }
-  });
-
-  app.get('/api/epic/free-games', async (req, res) => {
-    try {
-      const games = await epicManager.fetchFreeGames();
-      res.json({ success: true, data: games });
-    } catch (e) {
-      res.status(500).json({ success: false, message: e.message });
-    }
-  });
-
-  app.post('/api/epic/claim', async (req, res) => {
-    try {
-      if (epicManager.running || epicManager.checking) {
-        return res.json({ success: false, message: 'Epic 任务正在运行中，请稍后再试' });
-      }
-      const accountId = req.body?.accountId || null;
-      const data = accountId ? await epicManager.claimOne(accountId) : await epicManager.claimAll();
-      res.json({ success: true, data });
-    } catch (e) {
-      if (e?.code === 'EPIC_STOPPED') {
-        return res.json({ success: true, stopped: true, message: e.message, data: { results: [] } });
-      }
-      res.status(500).json({ success: false, message: e.message });
-    }
-  });
-
-  app.post('/api/epic/stop', async (req, res) => {
-    try {
-      const result = await epicManager.stop();
-      res.json({ success: true, ...result });
-    } catch (e) {
-      res.status(500).json({ success: false, message: e.message });
-    }
-  });
-
-  app.get('/api/epic/status', (req, res) => {
-    res.json({
-      success: true,
-      data: {
-        ...epicManager.getState(),
-        settings: epicManager.getSettings(),
-        demo: process.env.EPIC_DEMO === '1',
-        records: configManager.getEpicClaimRecords(20)
-      }
-    });
-  });
-
-  // Epic 全局领取设置
-  app.get('/api/epic/settings', (req, res) => {
-    res.json({ success: true, data: epicManager.getSettings() });
-  });
-
-  app.post('/api/epic/settings', (req, res) => {
-    try {
-      const b = req.body || {};
-      const num = (v, min, max, dft) => {
-        const n = Number(v);
-        if (!Number.isFinite(n)) return dft;
-        return Math.max(min, Math.min(max, n));
-      };
-      configManager.update({
-        epic: {
-          enabled: b.enabled !== false,
-          checkIntervalMin: num(b.checkIntervalMin, 5, 1440, 30),
-          retryCount: num(b.retryCount, 0, 5, 2),
-          retryIntervalSec: num(b.retryIntervalSec, 10, 600, 60),
-          accountGapSec: num(b.accountGapSec, 0, 600, 20)
-        }
-      });
-      scheduler.restart(); // 让新的检查间隔立即生效
-      logger.log('🎮', 'Epic 领取设置已更新');
-      res.json({ success: true, data: epicManager.getSettings() });
-    } catch (e) {
-      res.status(400).json({ success: false, message: e.message });
-    }
   });
 
   return app;

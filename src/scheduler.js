@@ -4,7 +4,6 @@ import cron from 'node-cron';
 import configManager from './config.js';
 import logger from './logger.js';
 import taskManager from './core/taskManager.js';
-import epicManager from './core/epic.js';
 import { DATA_DIR, writeFileAtomic } from './fsUtil.js';
 
 const PLAN_FILE = path.join(DATA_DIR, 'schedule_plan.json');
@@ -16,7 +15,6 @@ const PLAN_SCHEMA = 3;
 class Scheduler {
   constructor() {
     this.job = null;
-    this.epicJob = null;
     this.plannedDailyRuns = {};
     this.loadPlans();
   }
@@ -270,8 +268,6 @@ class Scheduler {
     const cfg = configManager.get();
     if (!cfg.schedule?.enabled) {
       logger.log('⏸️', '后台自动定时巡检当前已禁用');
-      // Epic 自动领取独立于微软定时开关
-      this.startEpicJob();
       return;
     }
 
@@ -344,42 +340,9 @@ class Scheduler {
     });
 
     logger.log('🟢', `后台时段拟人调度引擎已就绪 (9-13 / 13-17 / 17-21 / 21-次日01 时段错峰 + 60分钟随机浮动)`);
-    this.startEpicJob();
   }
 
-  /** Epic 免费游戏：按设置的检查间隔轮询，发现未领取的才真正触发领取 */
-  startEpicJob() {
-    if (this.epicJob) {
-      this.epicJob.stop();
-      this.epicJob = null;
-    }
-    const settings = epicManager.getSettings();
-    if (!settings.enabled) {
-      logger.log('⏸️', 'Epic 免费游戏自动领取已禁用');
-      return;
-    }
 
-    // 每分钟判断一次是否到达「检查间隔」
-    this.epicJob = cron.schedule('* * * * *', async () => {
-      if (epicManager.running) return;
-      const s = epicManager.getSettings();
-      if (!s.enabled) return;
-
-      const accounts = configManager.getEpicAccounts().filter(a => a.enabled !== false && a.storageState?.cookies?.length);
-      if (accounts.length === 0) return;
-
-      const elapsedMin = (Date.now() - epicManager.lastCheckAt) / 60000;
-      if (epicManager.lastCheckAt && elapsedMin < s.checkIntervalMin) return;
-
-      try {
-        await epicManager.checkAndClaimIfNeeded();
-      } catch (e) {
-        logger.log('🔴', `Epic 定时检查异常: ${e.message}`);
-      }
-    });
-
-    logger.log('🎮', `Epic 免费游戏自动领取已就绪（每 ${settings.checkIntervalMin} 分钟检查一次，失败重试 ${settings.retryCount} 次）`);
-  }
 
   stop() {
     if (this.job) {

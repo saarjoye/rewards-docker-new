@@ -25,6 +25,10 @@ export class TaskManager {
     this.runQueueIndex = 0;
     this.runTotalAccounts = 0;
     this.runStartedAt = 0;
+    this.currentTask = '';
+    this.currentTaskProgress = '';
+    this.waitDeadline = 0;
+    this.waitReason = '';
     this.lastUnifiedReportDate = 0;
     this.stats = this.loadStats();
   }
@@ -822,7 +826,7 @@ export class TaskManager {
     rewardsApi.setCurrentAccount(accCfg);
     // 切换日志账号上下文：该账号下未显式传账号名的日志也会自动带上账号名
     logger.setAccountContext(accountName);
-    this.setRunPhase('sync', '正在同步账号 ' + accountName + ' 的官网进度');
+    this.setRunPhase('sync', '正在同步账号 ' + accountName + ' 的官网进度', '官网真实进度同步', '同步中');
 
     logger.log('👤', `>>> 开始执行账号 [${accountName}] 的自动化打卡任务 <<<`, accountName);
 
@@ -857,7 +861,7 @@ export class TaskManager {
     this.saveStats();
     logger.log('📊', `当前积分: ${accStats.balance}`, accountName);
 
-    this.setRunPhase('auth', '正在准备账号 ' + accountName + ' 的登录凭据');
+    this.setRunPhase('auth', '正在准备账号 ' + accountName + ' 的登录凭据', '准备登录凭据', '校验中');
     // 检查或刷新 Token
     const tokenOk = await authManager.refreshToken(false, accountId);
     if (!tokenOk) {
@@ -961,7 +965,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
-    this.setRunPhase('cards', '正在处理账号 ' + accountName + ' 的活动卡片与每日活动集');
+    this.setRunPhase('cards', '正在处理账号 ' + accountName + ' 的活动卡片与每日活动集', '活动卡片与日常集', '处理中');
     // 3. 活动卡片 / 每日活动集 / 桌面端打孔卡（三个真正独立的开关）
     const wantDailySet = globalCfg.tasks?.dailySet !== false;
     const wantDesktop = globalCfg.tasks?.desktopApp !== false;
@@ -1067,7 +1071,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
-    this.setRunPhase('quests', '正在处理账号 ' + accountName + ' 的任务打孔卡');
+    this.setRunPhase('quests', '正在处理账号 ' + accountName + ' 的任务打孔卡', '任务区打孔卡', '推进中');
     // 4.5 任务区打孔卡 (如「十月必看五大亮点」这类每天解锁一个的任务)
     //     旧版本完全没处理这类任务，导致官网上长期停在 0/5。
     if (globalCfg.tasks?.promos && this.running && browserManager.getExecutablePath()) {
@@ -1111,7 +1115,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
-    this.setRunPhase('streak', '正在检查账号 ' + accountName + ' 的连签与额外积分');
+    this.setRunPhase('streak', '正在检查账号 ' + accountName + ' 的连签与额外积分', '连签与额外积分', '检查与领取中');
     // 5. 连签检测与额外积分检测
     //    视觉搜索补签只在任务执行期尝试（每账号每天一次），读取进度的同步流程不再触发
     const streakInfo = await rewardsApi.checkStreak({ allowVisualSearchCheckIn: true });
@@ -1123,7 +1127,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
-    this.setRunPhase('search', '正在处理账号 ' + accountName + ' 的 PC 搜索任务');
+    this.setRunPhase('search', '正在处理账号 ' + accountName + ' 的 PC 搜索任务', '必应 PC 搜索', '搜索打卡中');
     // 4. 必应 PC 搜索任务与仪表盘同步
     const info = await rewardsApi.getRewardsInfo();
     if (info) {
@@ -1215,7 +1219,7 @@ export class TaskManager {
 
     if (!this.running) return;
 
-    this.setRunPhase('finish', '正在结算账号 ' + accountName + ' 的积分与统计');
+    this.setRunPhase('finish', '正在结算账号 ' + accountName + ' 的积分与统计', '积分最终结算', '结算中');
     // 6. 结算单账号总积分
     // 余额与「今日已增」都以官网为准：这里再取一次，把本轮新做的部分算进去
     const finalInfo = await rewardsApi.getRewardsInfo(1);

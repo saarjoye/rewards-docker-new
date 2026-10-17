@@ -240,10 +240,10 @@ class BrowserManager extends EventEmitter {
       throw new Error('未检测到 Chromium 或 Edge 浏览器内核，请确保安装了 Chromium');
     }
 
-    // 抢浏览器资源锁：Epic 领取也走同一把锁，避免两个 Chromium 同时跑把 NAS 内存打满
+    // 抢浏览器资源锁：全局单例互斥，避免两个 Chromium 同时跑把 NAS 内存打满
     const gotSlot = await browserSlotLock.acquire('rewards-browser', 180000);
     if (!gotSlot) {
-      throw new Error('浏览器资源正被其它任务占用（Epic 领取或另一个搜索流程），请稍后重试');
+      throw new Error('浏览器资源正被其它任务占用，请稍后重试');
     }
     this.slotHeld = true;
 

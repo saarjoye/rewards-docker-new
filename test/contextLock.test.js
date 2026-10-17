@@ -38,8 +38,8 @@ test('acquire 带超时，锁被占用时返回 false', async () => {
 test('账号上下文锁与浏览器资源锁是两把独立的锁', () => {
   assert.notEqual(accountContextLock, browserSlotLock);
   accountContextLock.tryAcquire('task-run');
-  // 积分任务持有账号上下文锁时，Epic 仍应能拿到浏览器锁（两者语义不同）
-  assert.equal(browserSlotLock.tryAcquire('epic-browser'), true);
+  // 积分任务持有账号上下文锁时，其它任务仍应能拿到浏览器锁（两者语义不同）
+  assert.equal(browserSlotLock.tryAcquire('other-browser'), true);
   accountContextLock.release('task-run');
-  browserSlotLock.release('epic-browser');
+  browserSlotLock.release('other-browser');
 });
