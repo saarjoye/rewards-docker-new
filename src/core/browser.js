@@ -412,6 +412,78 @@ class BrowserManager extends EventEmitter {
   }
 
   /**
+   * 用真实 Chromium 打开 rewards.bing.com/earn 并返回完整 HTML。
+   *
+   * 为什么必须用浏览器：实测纯 HTTP 客户端（Node https / axios）访问 /earn
+   * 会被 307 重定向到 login.windows.net，拿不到任务数据；
+   * 同一网络下用 Chrome 打开（无论是否带 Cookie）都返回 200 和完整页面。
+   * 因此今日积分/连续签到/可领取/活动卡片必须走浏览器渲染路径。
+   */
+  async fetchEarnPageHtml(acc) {
+    const { context, page } = await this.withTemporaryPage(acc, 'https://rewards.bing.com/earn');
+    try {
+      return await page.content();
+    } finally {
+      await context.close().catch(() => {});
+    }
+  }
+
+  /**
+   * 启动一个临时浏览器上下文，导航到 url，返回 { context, page }。
+   * 调用方负责 context.close()。共用 browserSlotLock，避免与搜索流程并发。
+   */
+  async withTemporaryPage(acc, url) {
+    const slotOwner = `earn-page:${Date.now()}`;
+    const gotSlot = await browserSlotLock.acquire(slotOwner, 180000);
+    if (!gotSlot) throw new Error('浏览器资源正被其它任务占用，请稍后重试');
+    let browser = null;
+    let context = null;
+    try {
+      const executablePath = this.getExecutablePath();
+      if (!executablePath) throw new Error('未检测到 Chromium');
+      browser = await chromium.launch({
+        executablePath,
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-breakpad',
+          '--disable-crash-reporter',
+          '--renderer-process-limit=1'
+        ]
+      });
+      context = await browser.newContext({
+        userAgent: PC_USER_AGENT,
+        viewport: { width: 1366, height: 768 },
+        locale: 'zh-CN',
+        timezoneId: 'Asia/Shanghai',
+        extraHTTPHeaders: {
+          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'sec-ch-ua': SEC_CH_UA,
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': PLATFORM.clientHint
+        }
+      });
+      if (acc?.cookie) {
+        const cookies = this.parseCookies(acc.cookie, '.bing.com');
+        await this.addCookiesSafely(context, cookies, acc?.name);
+      }
+      const page = await context.newPage();
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForTimeout(3500);
+      return { context, page };
+    } catch (e) {
+      if (context) await context.close().catch(() => {});
+      if (browser) await browser.close().catch(() => {});
+      throw e;
+    } finally {
+      browserSlotLock.release(slotOwner);
+    }
+  }
+
+  /**
    * 把当前浏览器状态（Cookie + localStorage）写回磁盘，供下次执行复用。
    *
    * 只在任务确实跑成功的路径上调用：失败路径写回会把半残的会话固化下来，

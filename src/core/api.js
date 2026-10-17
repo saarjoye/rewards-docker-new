@@ -449,14 +449,43 @@ export class RewardsApi {
   /**
    * 获取用户积分、各项任务配额与明细 (Dashboard Info)
    */
+  /**
+   * 抓取 /earn 页面 HTML：优先用真实 Chromium，失败再退回 HTTP。
+   *
+   * 实测：纯 HTTP 会被 307 重定向到 login.windows.net，只能拿到 ~34KB 的登录壳；
+   * 真实浏览器无论带不带 Cookie 都返回 200 与完整页面（300KB+）。
+   */
+  async fetchEarnHtmlPreferBrowser() {
+    // 单测/离线环境禁用浏览器路径，避免拉起真实 Chromium
+    if (process.env.MSR_DISABLE_BROWSER_FETCH === '1') {
+      const html = await networkClient.request({
+        url: 'https://rewards.bing.com/earn',
+        headers: pcPageHeaders()
+      });
+      return { html, source: 'http' };
+    }
+    try {
+      const { default: browserManager } = await import('./browser.js');
+      const acc = configManager.resolveAccount(this.currentAccountId);
+      const html = await browserManager.fetchEarnPageHtml(acc);
+      if (html && String(html).length > 100000) {
+        return { html, source: 'browser' };
+      }
+    } catch (e) {
+      logger.log('🟡', `浏览器抓取 /earn 失败，回退 HTTP: ${e.message}`);
+    }
+    const html = await networkClient.request({
+      url: 'https://rewards.bing.com/earn',
+      headers: pcPageHeaders()
+    });
+    return { html, source: 'http' };
+  }
+
   async getRewardsInfo(maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const [html, dashHtml, flyoutRaw] = await Promise.all([
-          networkClient.request({
-            url: 'https://rewards.bing.com/earn',
-            headers: pcPageHeaders()
-          }),
+          this.fetchEarnHtmlPreferBrowser().then(r => r.html).catch(() => ''),
           networkClient.request({
             url: 'https://rewards.bing.com/dashboard',
             headers: pcPageHeaders()
@@ -1169,16 +1198,34 @@ export class RewardsApi {
       activityStatus,
       htmlLength: String(html).length,
       userInfoSummary,
-      userInfoError
+      userInfoError,
+      // 空壳页排查：页面头部原文 + Cookie 名称清单（不含值）
+      htmlHead: String(html).slice(0, 1500),
+      cookieNames: (() => {
+        try {
+          const cookie = networkClient.getCookieString('https://rewards.bing.com/') || '';
+          return cookie.split(';')
+            .map(part => part.trim().split('=')[0])
+            .filter(Boolean)
+            .sort();
+        } catch {
+          return [];
+        }
+      })(),
+      hasRequestVerificationCookie: (() => {
+        try {
+          const cookie = networkClient.getCookieString('https://rewards.bing.com/') || '';
+          return /(^|;\s*)(__RequestVerificationToken|RPSSecAuth|KievRPSSecAuth|_C_Auth)=/i.test(cookie);
+        } catch {
+          return false;
+        }
+      })()
     };
   }
 
   async getActivityCardStatus() {
     try {
-      const html = await networkClient.request({
-        url: 'https://rewards.bing.com/earn',
-        headers: pcPageHeaders()
-      });
+      const { html } = await this.fetchEarnHtmlPreferBrowser();
       if (!html) return { total: 0, completed: 0, readable: false, reason: 'empty-response' };
 
       // /earn 是 Next.js RSC 页面，activityCards 位于 self.__next_f.push 的转义片段内。
