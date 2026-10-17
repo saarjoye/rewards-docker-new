@@ -518,7 +518,7 @@ export class RewardsApi {
         let todayPointsSource = null;
 
         // 策略 1（最准确）：React Flight 里「今日积分」+ text-pageHeader 的固定搭配
-        const headerMatch = normalizedEarn.match(/"children"\s*:\s*"今日积分"[\s\S]{0,2000}?"className"\s*:\s*"text-pageHeader"[\s\S]{0,200}?"children"\s*:\s*"\+?([\d,]+)"/)
+        const headerMatch = normalizedEarn.match(/"children"\s*:\s*"今日积分"[\s\S]{0,2000}?"className"\s*:\s*"text-pageHeader"[\s\S]{0,200}?"children"\s*:\s*"?\+?([\d,]+)"?/)
           || normalizedEarn.match(/今日积分<\/[^>]+>[\s\S]{0,1200}?class="text-pageHeader"[^>]*>\+?([\d,]+)</);
         if (headerMatch) {
           const n = parseInt(headerMatch[1].replace(/,/g, ''), 10);
@@ -639,12 +639,15 @@ export class RewardsApi {
           stampsProgress = parseInt(stampMatch[2], 10) || 8;
         }
 
-        // 平台待领取额外积分提取（位于 /dashboard 顶部卡片）
+        // 平台待领取额外积分（"可领取"卡片）。
+        // 同样要兼容 React Flight 把数字序列化为数值而非字符串的情况。
         let claimablePoints = 0;
-        const claimableMatch = cleanDash.match(/可领取<\/p>[\s\S]*?class="text-pageHeader">(\d[\d,]*)</i)
-          || cleanDash.match(/alt="可领取"[^>]*>[\s\S]*?(\d[\d,]*)/i);
-        if (claimableMatch) {
-          claimablePoints = parseInt(claimableMatch[1].replace(/,/g, ''), 10) || 0;
+        const normalizedDash = normalizeFlightFragment(cleanDash);
+        const claimMatch = normalizedDash.match(/"children"\s*:\s*"可领取"[\s\S]{0,1200}?"children"\s*:\s*"?\+?([\d,]+)"?/)
+          || normalizedDash.match(/可领取<\/p>[\s\S]*?class="text-pageHeader"[^>]*>\+?([\d,]+)</)
+          || normalizedDash.match(/alt="可领取"[^>]*>[\s\S]{0,300}?(\d[\d,]*)/);
+        if (claimMatch) {
+          claimablePoints = parseInt(claimMatch[1].replace(/,/g, ''), 10) || 0;
         }
 
         // 连续打卡任务（必应搜索 / 每日活动 / 必应应用）的真实状态。
@@ -1567,12 +1570,17 @@ export class RewardsApi {
       });
       if (!html) return null;
 
-      const text = String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+      // 官网是 Next.js RSC 页面，正文数字在 Flight 数据流里，
+      // 直接剥 HTML 标签拿不到「每日连续打卡 123」这种相邻文本。
+      const flight = normalizeFlightFragment(concatFlightChunks(String(html)));
       let streakDays = 0;
-      const mStreak = text.match(/每日连续打卡\s*(\d+)/);
-      if (mStreak) {
-        streakDays = parseInt(mStreak[1]) || 0;
+      const streakMatch = flight.match(/"children"\s*:\s*"每日连续打卡"[\s\S]{0,1500}?"children"\s*:\s*"?\+?(\d+)"?/)
+        || flight.match(/每日连续打卡[\s\S]{0,300}?(\d+)/)
+        || String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').match(/每日连续打卡\s*(\d+)/);
+      if (streakMatch) {
+        streakDays = parseInt(streakMatch[1], 10) || 0;
       }
+      const text = String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 
       // 检测视觉搜索
       const vsMatch = text.match(/视觉搜索连续打卡[\s\S]*?活动:\s*(\d+)\/(\d+)/);

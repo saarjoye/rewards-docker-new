@@ -18,9 +18,26 @@ export class AccountContextLock {
   constructor() {
     this.owner = null;
     this.depth = 0;
+    this.acquiredAt = 0;
+    this.lastOwner = null;
+    this.lastReleasedAt = 0;
   }
 
+  /**
+   * 是否被占用。附带「卡死锁」自愈：
+   * owner='task-run' 且已持有超过 4 小时（任务最长 3 小时窗口 + 余量），
+   * 或 owner='web-sync/web-action' 且超过 10 分钟，就判定为异常残留并强制释放。
+   * 这是防御性兜底：正常路径都在 finally 里 release，不应触发。
+   */
   isBusy() {
+    if (this.owner) {
+      const heldMs = Date.now() - this.acquiredAt;
+      const limitMs = this.owner === 'task-run' ? 4 * 60 * 60 * 1000 : 10 * 60 * 1000;
+      if (heldMs > limitMs) {
+        this.forceRelease(`stale-${this.owner}-${Math.round(heldMs / 1000)}s`);
+        return false;
+      }
+    }
     return this.owner !== null;
   }
 
@@ -29,12 +46,24 @@ export class AccountContextLock {
     return this.owner;
   }
 
+  /** 诊断快照：用于排查「明明没跑任务却说正在执行」 */
+  snapshot() {
+    return {
+      owner: this.owner,
+      depth: this.depth,
+      heldMs: this.owner ? Date.now() - this.acquiredAt : 0,
+      lastOwner: this.lastOwner,
+      lastReleasedAt: this.lastReleasedAt
+    };
+  }
+
   /**
    * 非阻塞获取。同一个 owner 重复获取视为重入，直接成功。
    * @returns {boolean} 是否拿到（或本来就持有）
    */
   tryAcquire(owner) {
     if (this.owner !== null && this.owner !== owner) return false;
+    if (this.owner === null) this.acquiredAt = Date.now();
     this.owner = owner;
     this.depth += 1;
     return true;
@@ -52,13 +81,35 @@ export class AccountContextLock {
     }
   }
 
+  /**
+   * 释放。注意：owner 不匹配时不做任何事（避免误释放别人的锁），
+   * 但会记录一次异常，便于发现 acquire/release 不成对。
+   */
   release(owner) {
-    if (this.owner !== owner) return;
+    if (this.owner !== owner) {
+      this.lastMismatch = { expected: this.owner, got: owner, at: Date.now() };
+      return;
+    }
     this.depth -= 1;
     if (this.depth <= 0) {
       this.depth = 0;
       this.owner = null;
+      this.acquiredAt = 0;
+      this.lastOwner = owner;
+      this.lastReleasedAt = Date.now();
     }
+  }
+
+  /**
+   * 强制释放（仅供诊断/恢复用）。正常情况下不应被调用。
+   */
+  forceRelease(reason = 'manual') {
+    const prev = { owner: this.owner, depth: this.depth, heldMs: this.acquiredAt ? Date.now() - this.acquiredAt : 0 };
+    this.owner = null;
+    this.depth = 0;
+    this.acquiredAt = 0;
+    this.lastForceRelease = { ...prev, reason, at: Date.now() };
+    return prev;
   }
 }
 

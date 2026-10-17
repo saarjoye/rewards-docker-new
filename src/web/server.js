@@ -32,7 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.7.4';
+const CURRENT_VERSION = '1.7.5';
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
@@ -660,6 +660,24 @@ export function createServer() {
     }
   });
 
+  // 诊断：账号上下文锁状态（排查「没跑任务却提示正在执行」）
+  app.get('/api/system/lock', (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        lock: accountContextLock.snapshot(),
+        taskRunning: taskManager.running,
+        runningAccountId: taskManager.runningAccountId
+      }
+    });
+  });
+
+  // 强制解除账号上下文锁（仅当确实没有任务在跑时使用）
+  app.post('/api/system/lock/release', (req, res) => {
+    const prev = accountContextLock.forceRelease('manual-api');
+    logger.log('🟡', `已手动解除账号上下文锁（原持有者: ${prev.owner || '无'}, 深度: ${prev.depth}）`);
+    res.json({ success: true, data: { previous: prev, lock: accountContextLock.snapshot() } });
+  });
   // 0.5 本地版本信息：这是二开版本，不再请求或监控上游仓库更新。
   // 保留旧路径作为兼容接口，避免旧页面缓存命中时产生 404。
   app.get('/api/system/version', (req, res) => {

@@ -261,3 +261,27 @@ test('今日积分窗口解析：数字带千分位与加号时也能识别', as
     assert.equal(info.todayPoints, 1234, '千分位与加号不应影响解析');
   });
 });
+
+test('React Flight 数字不带引号时，今日积分/连续签到/可领取都能解析', async () => {
+  // 真实故障形态：Next.js Flight 把数字序列化为数值，
+  // 是 "children":145 而不是 "children":"145"。
+  const page = [
+    '<script>self.__next_f.push([1,"a:\\"children\\":\\"今日积分\\",\\"b\\":{\\"className\\":\\"text-pageHeader\\",\\"children\\":145}"])</script>',
+    '<script>self.__next_f.push([1,"c:\\"children\\":\\"每日连续打卡\\",\\"d\\":{\\"children\\":123}"])</script>'
+  ].join('');
+  await withStubbedNetwork(page, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.equal(info.todayPoints, 145, '数值型 children 必须能解析出 145');
+    const streak = await rewardsApi.checkStreak();
+    assert.equal(streak.streakDays, 123, '数值型 children 必须能解析出连续签到 123 天');
+  });
+});
+
+test('可领取额外积分支持数值型 children', async () => {
+  const dash = '<script>self.__next_f.push([1,"a:\\"children\\":\\"可领取\\",\\"b\\":{\\"className\\":\\"text-pageHeader\\",\\"children\\":3}"])</script>';
+  const earn = '<script>self.__next_f.push([1,"x:\\"pointsCounters\\":{\\"pc\\":{\\"max\\":60,\\"progress\\":10}}"])</script>';
+  await withRoutedNetwork({ earn, dashboard: dash, flyout: '' }, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.equal(info.claimablePoints, 3, '官网显示可领取 3 分时必须解析为 3');
+  });
+});
