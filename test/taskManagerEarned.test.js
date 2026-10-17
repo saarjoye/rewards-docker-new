@@ -140,3 +140,28 @@ test('官网同步：余额没有变化且取不到今日积分时，保留原�
     restore();
   }
 });
+test('官网同步：余额差不得覆盖官网已给出的今日积分（官网145 / 余额差513回归）', async () => {
+  const tm = new TaskManager();
+  const accId = 'acc_earned_official_wins';
+  const accCfg = { id: accId, name: '官网优先测试', cookie: 'MOCK_COOKIE' };
+  const st0 = tm.ensureAccountStats(accId);
+
+  // 官网页面已经给出今日积分 145
+  st0.balance = 13510;
+  st0.startBalance = 12997; // 余额差 = 513
+  st0.startBalanceDate = tm.getTodayNum();
+  st0.earned = 145;
+  st0.earnedSource = 'official';
+
+  // 本轮官网页面解析失败（todayPoints=null），旧逻辑会回退余额差把 145 冲成 513
+  const mockInfo = { balance: 13510, todayPoints: null, quests: [] };
+  const restore = stubRewardsInfo(mockInfo);
+  try {
+    await tm.syncAccountOfficialStatus(accCfg, { owned: true });
+    const st = tm.ensureAccountStats(accId);
+    assert.equal(st.earned, 145, '官网已给出的确切值不能被余额差兜底覆盖');
+    assert.equal(st.earnedSource, 'official');
+  } finally {
+    restore();
+  }
+});

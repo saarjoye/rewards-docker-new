@@ -242,3 +242,22 @@ test('earn 页面与 flyout 数值不一致时，以页面为准（官网 145 / 
     assert.equal(info.todayPointsSource, 'earn-page');
   });
 });
+
+test('今日积分窗口解析：children 层级变化仍能取到数字', async () => {
+  // 真实页面常见形态之一：数字与「今日积分」之间隔了多个字段
+  const page = '<script>self.__next_f.push([1,"a:\"children\":\"今日积分\",\"b\":{\"className\":\"text-globalBody2\",\"children\":\"赚取更多积分\"},\"c\":{\"className\":\"text-pageHeader\",\"children\":\"145\"}"])</script>';
+  const flyout = JSON.stringify({ userInfo: { balance: 13510 }, flyoutResult: { userStatus: { counters: { DailyPoint: [{ pointProgress: 513 }] } } } });
+  await withRoutedNetwork({ earn: page, dashboard: '', flyout }, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.equal(info.todayPoints, 145, '必须取到页面里的 145，而不是 flyout 的 513');
+    assert.equal(info.todayPointsSource, 'earn-page');
+  });
+});
+
+test('今日积分窗口解析：数字带千分位与加号时也能识别', async () => {
+  const page = '<script>self.__next_f.push([1,"a:\"children\":\"今日积分\",\"c\":{\"className\":\"text-pageHeader\",\"children\":\"+1,234\"}"])</script>';
+  await withRoutedNetwork({ earn: page, dashboard: '', flyout: '' }, async () => {
+    const info = await rewardsApi.getRewardsInfo(1);
+    assert.equal(info.todayPoints, 1234, '千分位与加号不应影响解析');
+  });
+});

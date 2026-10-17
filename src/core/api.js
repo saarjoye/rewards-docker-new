@@ -516,15 +516,41 @@ export class RewardsApi {
         const normalizedEarn = normalizeFlightFragment(clean);
         let todayPoints = null;
         let todayPointsSource = null;
-        const todayMatch = normalizedEarn.match(/"children"\s*:\s*"今日积分"[\s\S]{0,2000}?"className"\s*:\s*"text-pageHeader"[\s\S]{0,200}?"children"\s*:\s*"(\d+)"/)
-          || normalizedEarn.match(/今日积分<\/[^>]+>[\s\S]{0,1200}?class="text-pageHeader"[^>]*>(\d+)</);
-        if (todayMatch) {
-          const n = parseInt(todayMatch[1], 10);
+
+        // 策略 1（最准确）：React Flight 里「今日积分」+ text-pageHeader 的固定搭配
+        const headerMatch = normalizedEarn.match(/"children"\s*:\s*"今日积分"[\s\S]{0,2000}?"className"\s*:\s*"text-pageHeader"[\s\S]{0,200}?"children"\s*:\s*"\+?([\d,]+)"/)
+          || normalizedEarn.match(/今日积分<\/[^>]+>[\s\S]{0,1200}?class="text-pageHeader"[^>]*>\+?([\d,]+)</);
+        if (headerMatch) {
+          const n = parseInt(headerMatch[1].replace(/,/g, ''), 10);
           if (Number.isFinite(n)) {
             todayPoints = n;
             todayPointsSource = 'earn-page';
           }
         }
+
+        // 策略 2（结构变化兜底）：在「今日积分」后 600 字符内：
+        //   - 优先取带 + 号的数字（页面上「+145」这类明确增量标记）；
+        //   - 否则只有在候选唯一时才采用，多个数字直接放弃（宁可回退 flyout，也不误取时间戳/ID）。
+        if (todayPoints === null) {
+          const windows = [];
+          let idx = normalizedEarn.indexOf('今日积分');
+          while (idx !== -1 && windows.length < 3) {
+            windows.push(normalizedEarn.slice(idx, idx + 600));
+            idx = normalizedEarn.indexOf('今日积分', idx + 4);
+          }
+          for (const win of windows) {
+            const plus = win.match(/\+\s*([\d,]{1,7})/);
+            if (plus) {
+              const n = parseInt(plus[1].replace(/,/g, ''), 10);
+              if (Number.isFinite(n)) { todayPoints = n; todayPointsSource = 'earn-page'; break; }
+            }
+            const all = [...win.matchAll(/(?:^|[^0-9])([\d,]{1,7})(?![0-9])/g)]
+              .map(m => parseInt(String(m[1]).replace(/,/g, ''), 10))
+              .filter(n => Number.isFinite(n) && n >= 0 && n <= 100000);
+            if (all.length === 1) { todayPoints = all[0]; todayPointsSource = 'earn-page'; break; }
+          }
+        }
+
         if (todayPoints === null && Number.isFinite(flyout?.todayPoints)) {
           todayPoints = flyout.todayPoints;
           todayPointsSource = 'flyout';
@@ -1038,6 +1064,36 @@ export class RewardsApi {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 诊断：抓取 /earn 页面，返回「今日积分」附近的所有原文片段。
+   * 仅用于排查口径问题，不参与业务判定。
+   */
+  async diagnoseTodayPoints() {
+    const html = await networkClient.request({
+      url: 'https://rewards.bing.com/earn',
+      headers: pcPageHeaders()
+    });
+    if (!html) return { found: false, reason: 'empty-response' };
+    const normalized = normalizeFlightFragment(concatFlightChunks(String(html)));
+    const snippets = [];
+    const needle = '今日积分';
+    let idx = normalized.indexOf(needle);
+    while (idx !== -1 && snippets.length < 10) {
+      snippets.push(normalized.slice(Math.max(0, idx - 120), idx + 400));
+      idx = normalized.indexOf(needle, idx + needle.length);
+    }
+    const info = await this.getRewardsInfo(1).catch(() => null);
+    return {
+      found: snippets.length > 0,
+      count: snippets.length,
+      snippets,
+      parsedTodayPoints: info?.todayPoints ?? null,
+      parsedSource: info?.todayPointsSource ?? null,
+      flyoutDailyPoint: info?.flyoutTodayPoints ?? null,
+      htmlLength: String(html).length
+    };
   }
 
   async getActivityCardStatus() {

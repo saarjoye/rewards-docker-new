@@ -251,6 +251,14 @@ export class TaskManager {
     if (!isToday || !Number.isFinite(start) || !Number.isFinite(now) || start <= 0) return;
     const delta = now - start;
     if (delta <= 0) return;
+
+    // 余额差只是兜底口径，不能覆盖当天已经从官网拿到的确切数字。
+    // 典型场景：官网今日积分 145，但「今日起始余额」是在任务中途才记录的，
+    // 余额差会把任务开始前赚的分也算进去（513），把正确值冲掉。
+    const currentSource = accStats.earnedSource || '';
+    const currentIsOfficial = currentSource === 'official';
+    if (currentIsOfficial && Number.isFinite(Number(accStats.earned))) return;
+
     accStats.earned = delta;
     accStats.earnedSource = 'balance-delta';
   }

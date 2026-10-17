@@ -32,7 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CURRENT_VERSION = '1.7.3';
+const CURRENT_VERSION = '1.7.4';
 
 // 构建时由 Dockerfile 注入，用于在面板上确认「容器里跑的是哪一次提交」。
 // 版本号只表达语义版本，revision 才能区分同版本号下的不同构建。
@@ -636,6 +636,25 @@ export function createServer() {
           }
         }
       });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // 诊断：输出 /earn 页面「今日积分」附近原文，便于核对口径
+  app.get('/api/system/diagnose-today-points', async (req, res) => {
+    try {
+      const accountId = req.query.accountId || null;
+      const acc = configManager.resolveAccount(accountId);
+      if (!acc) return res.status(404).json({ success: false, message: '账号不存在' });
+      const prevCtx = rewardsApi.snapshotAccountContext();
+      rewardsApi.setCurrentAccount(acc);
+      try {
+        const data = await rewardsApi.diagnoseTodayPoints();
+        res.json({ success: true, account: acc.name || acc.id, data });
+      } finally {
+        rewardsApi.restoreAccountContext(prevCtx);
+      }
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }
