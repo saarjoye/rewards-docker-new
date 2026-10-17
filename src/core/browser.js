@@ -35,6 +35,7 @@ class BrowserManager extends EventEmitter {
     this.sessionAccount = null;
     // 共享的只读抓取浏览器（供 getRewardsInfo/checkStreak 等复用，避免每次启动新 Chromium）
     this.sharedFetcher = null;
+    this.sharedFetcherPromise = null;
     this.state = {
       status: 'idle', // 'idle' | 'starting' | 'navigating' | 'typing' | 'dwelling' | 'waiting' | 'stopped'
       activeAccountId: null,
@@ -474,6 +475,16 @@ class BrowserManager extends EventEmitter {
       this.sharedFetcher.lastUsedAt = Date.now();
       return this.sharedFetcher;
     }
+    // single-flight：/earn 与 /dashboard 会同时请求抓取，若没有这个 Promise，
+    // 两边都会看到 null 并各启动一套 Chromium，直接把峰值抬高近一倍。
+    if (this.sharedFetcherPromise) return this.sharedFetcherPromise;
+    this.sharedFetcherPromise = this.createSharedFetcher(acc).finally(() => {
+      this.sharedFetcherPromise = null;
+    });
+    return this.sharedFetcherPromise;
+  }
+
+  async createSharedFetcher(acc) {
     // 注意：不长期持有 browserSlotLock。
     // 共享抓取只会发生在持有 accountContextLock 的流程里（同步/任务），
     // 其他浏览器流程此时本来就会被账号锁挡住；若长期占着 browserSlotLock，
@@ -521,6 +532,10 @@ class BrowserManager extends EventEmitter {
 
   /** 关闭共享抓取浏览器（空闲超时或任务结束时调用） */
   async closeSharedFetcher() {
+    const pending = this.sharedFetcherPromise;
+    if (pending) {
+      try { await pending; } catch {}
+    }
     const f = this.sharedFetcher;
     if (!f) return;
     this.sharedFetcher = null;
