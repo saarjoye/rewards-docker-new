@@ -378,7 +378,7 @@ class Scheduler {
       }
     });
 
-    logger.log('🎮', `Epic 免费游戏自动领取已就绪（每 ${settings.checkIntervalMin} 分钟检查一次，失败重试 ${s.retryCount} 次）`);
+    logger.log('🎮', `Epic 免费游戏自动领取已就绪（每 ${settings.checkIntervalMin} 分钟检查一次，失败重试 ${settings.retryCount} 次）`);
   }
 
   stop() {
