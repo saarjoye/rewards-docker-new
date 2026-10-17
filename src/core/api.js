@@ -547,9 +547,10 @@ export class RewardsApi {
   async getRewardsInfo(maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const [html, dashHtml, flyoutRaw] = await Promise.all([
-          this.fetchEarnHtmlPreferBrowser().then(r => r.html).catch(() => ''),
-          this.fetchDashboardHtmlPreferBrowser().then(r => r.html).catch(() => ''),
+        // 串行抓取：共享浏览器下并发导航会互相干扰
+        const html = await this.fetchEarnHtmlPreferBrowser().then(r => r.html).catch(() => '');
+        const dashHtml = await this.fetchDashboardHtmlPreferBrowser().then(r => r.html).catch(() => '');
+        const [flyoutRaw] = await Promise.all([
           networkClient.request({
             url: `https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards&_=${Date.now()}`,
             headers: pcXhrHeaders({

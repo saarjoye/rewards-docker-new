@@ -32,6 +32,8 @@ class BrowserManager extends EventEmitter {
     this.slotHeld = false;
     // 当前绑定的账号（会话持久化需要它来定位文件与校验凭据指纹）
     this.sessionAccount = null;
+    // 共享的只读抓取浏览器（供 getRewardsInfo/checkStreak 等复用，避免每次启动新 Chromium）
+    this.sharedFetcher = null;
     this.state = {
       status: 'idle', // 'idle' | 'starting' | 'navigating' | 'typing' | 'dwelling' | 'waiting' | 'stopped'
       activeAccountId: null,
@@ -459,6 +461,80 @@ class BrowserManager extends EventEmitter {
    * 同一网络下用 Chrome 打开（无论是否带 Cookie）都返回 200 和完整页面。
    * 因此今日积分/连续签到/可领取/活动卡片必须走浏览器渲染路径。
    */
+  /**
+   * 获取共享抓取浏览器（单例）。多个 api 调用复用它，避免每次启动 Chromium
+   * 造成进程堆积（实测一次任务能积到 1.6GB）。
+   * 空闲 60 秒后自动关闭，避免常驻占内存。
+   */
+  async acquireSharedFetcher(acc) {
+    if (this.sharedFetcher) {
+      this.sharedFetcher.lastUsedAt = Date.now();
+      return this.sharedFetcher;
+    }
+    const gotSlot = await browserSlotLock.acquire('shared-fetcher', 180000);
+    if (!gotSlot) throw new Error('浏览器资源正被其它任务占用，请稍后重试');
+    try {
+      const executablePath = this.getExecutablePath();
+      if (!executablePath) throw new Error('未检测到 Chromium');
+      const browser = await chromium.launch({
+        executablePath,
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-breakpad',
+          '--disable-crash-reporter',
+          '--renderer-process-limit=1'
+        ]
+      });
+      const context = await browser.newContext({
+        userAgent: PC_USER_AGENT,
+        viewport: { width: 1366, height: 768 },
+        locale: 'zh-CN',
+        timezoneId: 'Asia/Shanghai',
+        extraHTTPHeaders: {
+          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'sec-ch-ua': SEC_CH_UA,
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': PLATFORM.clientHint
+        }
+      });
+      if (acc?.cookie) {
+        const cookies = this.parseCookies(acc.cookie, '.bing.com');
+        await this.addCookiesSafely(context, cookies, acc?.name);
+      }
+      this.sharedFetcher = { browser, context, lastUsedAt: Date.now(), slotHeld: true };
+      return this.sharedFetcher;
+    } catch (e) {
+      browserSlotLock.release('shared-fetcher');
+      throw e;
+    }
+  }
+
+  /** 关闭共享抓取浏览器（空闲超时或任务结束时调用） */
+  async closeSharedFetcher() {
+    const f = this.sharedFetcher;
+    if (!f) return;
+    this.sharedFetcher = null;
+    try { await f.context.close(); } catch {}
+    try { await f.browser.close(); } catch {}
+    browserSlotLock.release('shared-fetcher');
+  }
+
+  /** 定时清理：空闲超过 60 秒就关闭共享浏览器 */
+  scheduleSharedFetcherCleanup() {
+    if (this.sharedCleanupTimer) return;
+    this.sharedCleanupTimer = setInterval(() => {
+      const f = this.sharedFetcher;
+      if (f && Date.now() - f.lastUsedAt > 60000) {
+        this.closeSharedFetcher().catch(() => {});
+      }
+    }, 15000);
+    this.sharedCleanupTimer.unref?.();
+  }
+
   async fetchPageHtml(acc, url) {
     const { browser, context, page } = await this.withTemporaryPage(acc, url);
     try {

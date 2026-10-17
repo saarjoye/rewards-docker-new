@@ -1308,6 +1308,8 @@ export class TaskManager {
       this.runningAccountId = null;
       logger.setAccountContext('');
       accountContextLock.release('task-run');
+      // 任务结束：关闭共享抓取浏览器，释放内存
+      try { await browserManager.closeSharedFetcher(); } catch {}
       // 任务级内存峰值快照（tini 回收僵尸后再看这个数字才准确）
       try { memorySampler.commitRun('task-run'); } catch {}
     }
